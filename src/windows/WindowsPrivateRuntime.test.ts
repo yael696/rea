@@ -36,6 +36,17 @@ const nativeFailure = (win32Code: number): Error =>
     win32Code,
   });
 
+const sourceEntry = (path: string, directory: boolean) => ({
+  requestedPath: path,
+  finalPath: path,
+  filesystem: "NTFS",
+  volumeSerial: "0123456789abcdef",
+  fileId: "0123456789abcdef0123456789abcdef",
+  size: 0,
+  directory,
+  handle: {},
+});
+
 describe("Windows private runtime cleanup retry", () => {
   it("retries a transient sharing conflict through the same owned close", async () => {
     const conflict = nativeFailure(32);
@@ -147,6 +158,86 @@ describe("Windows private runtime cleanup retry", () => {
     nativeCall.mockImplementation((operation: string) =>
       operation === "runtime_create" ? observation : null,
     );
+    await runtime.close();
+  });
+});
+
+describe("Windows source path leases", () => {
+  it("holds a native directory admission through entry consumption", async () => {
+    const path = "C:\\projects\\saved.rep";
+    const opened = sourceEntry(path, true);
+    const operations: string[] = [];
+    nativeCall.mockImplementation((operation: string) => {
+      operations.push(operation);
+      if (operation === "runtime_create") return observation;
+      if (operation === "open_directory") return opened;
+      return null;
+    });
+    const runtime = WindowsPrivateRuntime.create("C:\\", "rea-");
+
+    await runtime.withSourceDirectory(path, async () => {
+      expect(operations).toEqual(["runtime_create", "open_directory"]);
+    });
+
+    expect(operations).toEqual(["runtime_create", "open_directory", "close"]);
+    expect(nativeCall).toHaveBeenLastCalledWith("close", [opened.handle]);
+    await runtime.close();
+  });
+
+  it("closes an admitted handle when the expected source type is wrong", async () => {
+    const path = "C:\\projects\\saved.gpr";
+    const opened = sourceEntry(path, true);
+    nativeCall.mockImplementation((operation: string) => {
+      if (operation === "runtime_create") return observation;
+      if (operation === "open") return opened;
+      return null;
+    });
+    const runtime = WindowsPrivateRuntime.create("C:\\", "rea-");
+
+    await expect(
+      runtime.withSourceFile(path, async () => "unreachable"),
+    ).rejects.toThrow(/regular source file/u);
+    expect(nativeCall).toHaveBeenLastCalledWith("close", [opened.handle]);
+    await runtime.close();
+  });
+
+  it("closes an admitted directory after its consumer fails", async () => {
+    const path = "C:\\projects\\saved.rep";
+    const opened = sourceEntry(path, true);
+    const consumerFailure = new Error("controlled entry read failure");
+    nativeCall.mockImplementation((operation: string) => {
+      if (operation === "runtime_create") return observation;
+      if (operation === "open_directory") return opened;
+      return null;
+    });
+    const runtime = WindowsPrivateRuntime.create("C:\\", "rea-");
+
+    await expect(
+      runtime.withSourceDirectory(path, async () => {
+        throw consumerFailure;
+      }),
+    ).rejects.toBe(consumerFailure);
+    expect(nativeCall).toHaveBeenLastCalledWith("close", [opened.handle]);
+    await runtime.close();
+  });
+
+  it("does not consume entries when native directory admission fails", async () => {
+    const path = "C:\\projects\\saved.rep";
+    const reparsePoint = nativeFailure(4390);
+    nativeCall.mockImplementation((operation: string) => {
+      if (operation === "runtime_create") return observation;
+      if (operation === "open_directory") throw reparsePoint;
+      return null;
+    });
+    const runtime = WindowsPrivateRuntime.create("C:\\", "rea-");
+    const operation = vi.fn(async () => undefined);
+
+    await expect(runtime.withSourceDirectory(path, operation)).rejects.toBe(
+      reparsePoint,
+    );
+
+    expect(operation).not.toHaveBeenCalled();
+    expect(nativeCall).not.toHaveBeenCalledWith("close", expect.anything());
     await runtime.close();
   });
 });

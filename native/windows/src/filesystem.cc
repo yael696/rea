@@ -697,11 +697,24 @@ napi_value filesystemCall(napi_env env, const std::wstring& operation,
                           const std::vector<napi_value>& args, RuntimeContext& context) {
   if (operation == L"cutter_bridge_verify_directory") return verifyCutterBridgeDirectory(env, args);
   if (operation == L"cutter_bridge_read_descriptor") return readCutterBridgeDescriptor(env, args);
-  const auto expected = operation == L"open" || operation == L"close" || operation == L"runtime_close" || operation == L"runtime_snapshot_cancel" ? 1
-                      : operation == L"runtime_create" || operation == L"runtime_mkdir" || operation == L"runtime_open" ? 2 : 3;
+  const auto expected =
+      operation == L"open" || operation == L"open_directory" ||
+              operation == L"close" || operation == L"runtime_close" ||
+              operation == L"runtime_snapshot_cancel"
+          ? 1
+          : operation == L"runtime_create" || operation == L"runtime_mkdir" ||
+                  operation == L"runtime_open"
+              ? 2
+              : 3;
   require(args.size() == static_cast<size_t>(expected), "Wrong native filesystem argument count", L"", ERROR_INVALID_PARAMETER);
   if (operation == L"open") {
     auto file = openFile(wide(env, args[0]));
+    auto result = identity(env, file->get(), file->requestedPath);
+    set(env, result, "handle", wrap(env, std::move(file)));
+    return result;
+  }
+  if (operation == L"open_directory") {
+    auto file = openFile(wide(env, args[0]), FILE_LIST_DIRECTORY, true);
     auto result = identity(env, file->get(), file->requestedPath);
     set(env, result, "handle", wrap(env, std::move(file)));
     return result;

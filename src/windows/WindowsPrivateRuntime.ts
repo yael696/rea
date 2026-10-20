@@ -176,6 +176,43 @@ export class WindowsPrivateRuntime {
     }
   }
 
+  /** Hold a natively admitted regular source file for one read operation. */
+  async withSourceFile<T>(
+    sourcePath: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    return this.#withSourceEntry(sourcePath, false, operation);
+  }
+
+  /** Hold a reparse-free source directory while its entries are consumed. */
+  async withSourceDirectory<T>(
+    sourcePath: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    return this.#withSourceEntry(sourcePath, true, operation);
+  }
+
+  async #withSourceEntry<T>(
+    sourcePath: string,
+    directory: boolean,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const file = fileSchema.parse(
+      this.authority.call(directory ? "open_directory" : "open", [sourcePath]),
+    );
+    try {
+      if (file.directory !== directory)
+        throw new Error(
+          directory
+            ? `Expected a source directory: ${sourcePath}`
+            : `Expected a regular source file: ${sourcePath}`,
+        );
+      return await operation();
+    } finally {
+      this.authority.call("close", [file.handle]);
+    }
+  }
+
   /** Remove owned objects by handle, unlinking reparse entries without traversal. */
   close(): Promise<void> {
     this.#closePromise ??= this.#remove().catch((cause: unknown) => {

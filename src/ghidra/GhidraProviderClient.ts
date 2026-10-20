@@ -177,15 +177,6 @@ export const createGhidraProviderClient = (input: {
         },
       }),
     );
-  if (existingProject !== undefined && installation.platform === "win32")
-    return err(
-      new ProviderAdapterError("ghidra", "open_binary", {
-        diagnostics: {
-          reason:
-            "Existing Ghidra project copies are not supported by the Windows P0 launch path.",
-        },
-      }),
-    );
   const psp = isGhidraPspTarget(target);
   const pspExtension = psp
     ? ghidraPspExtensionSchema.safeParse(

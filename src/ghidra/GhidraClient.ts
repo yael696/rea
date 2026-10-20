@@ -127,6 +127,33 @@ const createGhidraRuntimeRoot = async (
     ? "/tmp"
     : SESSION_ROOT;
   if (preferredParent === undefined) return createUnder(SESSION_ROOT);
+  const createWithFallback = async (
+    safeParent: string,
+  ): Promise<PrivateRuntimeRoot> => {
+    if (isInsideProjectData(safeParent)) return createUnder(fallbackParent);
+    try {
+      return await createUnder(safeParent);
+    } catch (preferredFailure: unknown) {
+      if (resolve(safeParent) === resolve(fallbackParent))
+        throw preferredFailure;
+      try {
+        return await createUnder(fallbackParent);
+      } catch (fallbackFailure: unknown) {
+        throw new AggregateError(
+          [preferredFailure, fallbackFailure],
+          "Could not create a private Ghidra runtime beside the selected project or in the session root.",
+        );
+      }
+    }
+  };
+  if ((platform ?? process.platform) === "win32")
+    return createWithFallback(
+      ghidraSessionRoot({
+        base: preferredParent,
+        platform: "win32",
+      }),
+    );
+
   const canonicalParent = await realpath(preferredParent).catch(
     () => undefined,
   );
@@ -135,20 +162,7 @@ const createGhidraRuntimeRoot = async (
     base: canonicalParent,
     ...(platform === undefined ? {} : { platform }),
   });
-  if (isInsideProjectData(safeParent)) return createUnder(fallbackParent);
-  try {
-    return await createUnder(safeParent);
-  } catch (preferredFailure: unknown) {
-    if (resolve(safeParent) === resolve(fallbackParent)) throw preferredFailure;
-    try {
-      return await createUnder(fallbackParent);
-    } catch (fallbackFailure: unknown) {
-      throw new AggregateError(
-        [preferredFailure, fallbackFailure],
-        "Could not create a private Ghidra runtime beside the selected project or in the session root.",
-      );
-    }
-  }
+  return createWithFallback(safeParent);
 };
 
 type GhidraStartupAttempt = SharedStartupAttempt<GhidraStartResult>;

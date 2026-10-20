@@ -25,7 +25,8 @@ not equivalence with another engine's pseudocode or analysis database.
 
 ## Reuse an existing project
 
-On Linux and macOS, select a saved expanded Ghidra project with these settings:
+On Linux and macOS, and on Windows with a fixed local NTFS project path,
+select a saved expanded Ghidra project with these settings:
 
 ```bash
 export REA_ANALYSIS_PROVIDER=ghidra
@@ -41,7 +42,8 @@ passed to Ghidra exactly; spaces and Unicode are preserved. Program names must
 be exact and cannot contain `*` or `?`, which Ghidra's `-process` option treats
 as wildcards. Both settings are required together. A language override,
 analyzer override, analysis seed file, or NativeAOT annotation extension cannot
-be combined with this mode. Windows Ghidra P0 does not support it.
+be combined with this mode. Windows rejects unsupported volumes and reparse
+paths before copying; it does not follow junctions or other reparse points.
 
 The CLI and MCP server read the same environment configuration. Select Ghidra
 for each CLI investigation with `--provider ghidra`; use
@@ -66,12 +68,14 @@ delete the project, or run the global auto-analysis or no-return repair pass.
 The bridge handshake must report both the selected program name and the
 executable SHA-256 admitted by `open_binary`, and must attest that auto-analysis
 was skipped; a mismatch fails startup. The session reports skipped analysis
-separately from completion and timeout. REA prefers a temporary runtime beside
-the selected project to allow filesystem
-copy-on-write where supported, and falls back to the normal session temp root
-when that location cannot be created. The source project is only read. Close
-any GUI session that is editing it before starting REA so the copied project
-has a stable source state.
+separately from completion and timeout. On Windows, native path admission
+rejects reparse points and each project file is copied into a private runtime
+on local NTFS; unsupported path or filesystem semantics fail closed. On Linux
+and macOS, REA prefers a temporary runtime beside the selected project to allow
+filesystem copy-on-write where supported, and falls back to the normal session
+temp root when that location cannot be created. The source project is only
+read. Close any GUI session that is editing it before starting REA so the
+copied project has a stable source state.
 
 Project completeness remains unknown. Results reflect the saved Ghidra state,
 including any partial analysis already present; REA does not claim that all
