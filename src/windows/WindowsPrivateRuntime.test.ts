@@ -242,26 +242,75 @@ describe("Windows source path leases", () => {
   });
 });
 
-it.each([995, 5])(
-  "classifies native snapshot code %i independently of a late abort",
-  async (code) => {
+it("keeps mutable private copies distinct from immutable snapshots", async () => {
+  const identity = {
+    requestedPath: "C:\\source.bin",
+    finalPath: "C:\\source.bin",
+    filesystem: "NTFS",
+    volumeSerial: "0123456789abcdef",
+    fileId: "0123456789abcdef0123456789abcdef",
+    size: 4,
+    directory: false,
+  };
+  const copied = {
+    sha256: "a".repeat(64),
+    source: identity,
+    snapshot: { ...identity, requestedPath: "project\\index.dat" },
+  };
+  nativeCall.mockImplementation((operation: string) => {
+    if (operation === "runtime_create") return observation;
+    if (operation === "runtime_snapshot" || operation === "runtime_copy")
+      return Promise.resolve(copied);
+    return null;
+  });
+  const runtime = WindowsPrivateRuntime.create("C:\\", "rea-");
+
+  await runtime.snapshot("C:\\source.bin", "target.bin");
+  await runtime.copyFile("C:\\source.bin", "project\\index.dat");
+
+  expect(nativeCall).toHaveBeenCalledWith("runtime_snapshot", [
+    observation.handle,
+    "C:\\source.bin",
+    "target.bin",
+  ]);
+  expect(nativeCall).toHaveBeenCalledWith("runtime_copy", [
+    observation.handle,
+    "C:\\source.bin",
+    "project\\index.dat",
+  ]);
+  await runtime.close();
+});
+
+it.each([
+  ["immutable snapshot", "runtime_snapshot", 995],
+  ["immutable snapshot", "runtime_snapshot", 5],
+  ["mutable project copy", "runtime_copy", 995],
+  ["mutable project copy", "runtime_copy", 5],
+] as const)(
+  "classifies %s native failure %i",
+  async (_label, operation, code) => {
     const controller = new AbortController();
     const failure = nativeFailure(code);
     nativeCall.mockImplementation((operation: string) => {
       if (operation === "runtime_create") return observation;
-      if (operation === "runtime_snapshot") return Promise.reject(failure);
+      if (operation === "runtime_snapshot" || operation === "runtime_copy")
+        return Promise.reject(failure);
       return null;
     });
     const runtime = WindowsPrivateRuntime.create("C:\\", "rea-");
-    const pending = runtime.snapshot(
-      "C:\\target.bin",
-      "target.bin",
-      controller.signal,
-    );
+    const pending =
+      operation === "runtime_snapshot"
+        ? runtime.snapshot("C:\\target.bin", "target.bin", controller.signal)
+        : runtime.copyFile(
+            "C:\\target.bin",
+            "project\\index.dat",
+            controller.signal,
+          );
     controller.abort(null);
     const result: unknown = await pending.catch((cause: unknown) => cause);
     if (code === 995) {
       expect(result).toBeInstanceOf(WindowsSnapshotCancelledError);
+      expect(result).toHaveProperty("message", "Windows snapshot cancelled");
       expect(result).toMatchObject({ reason: null, cause: failure });
     } else expect(result).toBe(failure);
     await runtime.close();

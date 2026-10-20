@@ -6,6 +6,7 @@ on:
       - feat/ghidra-existing-project-windows
     paths:
       - .github/workflows/rea-windows-native-port.yml
+      - native/windows/src/filesystem.cc
 
 permissions:
   contents: read

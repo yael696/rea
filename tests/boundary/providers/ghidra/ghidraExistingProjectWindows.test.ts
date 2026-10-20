@@ -36,10 +36,10 @@ import type { OwnedProviderProcessSpawnOptions } from "../../../../src/process/P
 
 type FakeWindowsRuntime = {
   readonly observation: { readonly path: string };
-  readonly snapshots: ReturnType<typeof vi.fn>;
+  readonly copies: ReturnType<typeof vi.fn>;
   mkdir(relativePath: string): void;
   writeFile(relativePath: string, content: string): void;
-  snapshot(
+  copyFile(
     sourcePath: string,
     relativePath: string,
     signal?: AbortSignal,
@@ -74,8 +74,9 @@ const createRoot = async (): Promise<string> => {
 const createFakeRuntime = (
   runtimeRoot: string,
   failSourcePath?: string,
+  afterCopy?: () => void,
 ): FakeWindowsRuntime => {
-  const snapshots = vi.fn();
+  const copies = vi.fn();
   const sourceEntry = async (
     sourcePath: string,
     directory: boolean,
@@ -89,15 +90,15 @@ const createFakeRuntime = (
   };
   const runtime: FakeWindowsRuntime = {
     observation: { path: runtimeRoot },
-    snapshots,
+    copies,
     mkdir: (relativePath) => mkdirSync(win32.join(runtimeRoot, relativePath)),
     writeFile: (relativePath, content) =>
       writeFileSync(win32.join(runtimeRoot, relativePath), content, {
         flag: "wx",
       }),
-    snapshot: async (sourcePath, relativePath, signal) => {
+    copyFile: async (sourcePath, relativePath, signal) => {
       signal?.throwIfAborted();
-      snapshots(sourcePath, relativePath);
+      copies(sourcePath, relativePath);
       if (sourcePath === failSourcePath)
         throw new Error("synthetic private-copy failure");
       await copyFile(
@@ -105,6 +106,7 @@ const createFakeRuntime = (
         win32.join(runtimeRoot, relativePath),
         fsConstants.COPYFILE_EXCL,
       );
+      afterCopy?.();
       signal?.throwIfAborted();
     },
     withSourceDirectory: async (sourcePath, operation) => {
@@ -202,7 +204,7 @@ describe.skipIf(process.platform !== "win32")(
         ),
       ).toBe("saved project data");
       expect(await readFile(markerPath, "utf8")).toBe("saved marker");
-      expect(runtime.snapshots).toHaveBeenCalledTimes(2);
+      expect(runtime.copies).toHaveBeenCalledTimes(2);
       expect((await lstat(markerPath)).isSymbolicLink()).toBe(false);
     });
 
@@ -220,7 +222,7 @@ describe.skipIf(process.platform !== "win32")(
         ),
       ).rejects.toThrow(/local drive-absolute Windows path/u);
 
-      expect(runtime.snapshots).not.toHaveBeenCalled();
+      expect(runtime.copies).not.toHaveBeenCalled();
       expect(windowsPrivateRuntime).not.toHaveBeenCalled();
     });
 
@@ -235,7 +237,7 @@ describe.skipIf(process.platform !== "win32")(
         copyProject(projectPath, "missing project", runtimeRoot),
       ).rejects.toThrow(/requires a regular/u);
 
-      expect(runtime.snapshots).not.toHaveBeenCalled();
+      expect(runtime.copies).not.toHaveBeenCalled();
       await expect(
         lstat(win32.join(runtimeRoot, "project")),
       ).rejects.toMatchObject({ code: "ENOENT" });
@@ -262,7 +264,7 @@ describe.skipIf(process.platform !== "win32")(
       ).rejects.toThrow(/symbolic link|reparse/u);
 
       expect(
-        runtime.snapshots.mock.calls.some(([sourcePath]) =>
+        runtime.copies.mock.calls.some(([sourcePath]) =>
           String(sourcePath).startsWith(external),
         ),
       ).toBe(false);
@@ -279,7 +281,7 @@ describe.skipIf(process.platform !== "win32")(
       ).rejects.toMatchObject({ code: "ENOENT" });
     });
 
-    it("does not launch Ghidra when a private project snapshot fails", async () => {
+    it("does not launch Ghidra when a private project copy fails", async () => {
       const parent = await createRoot();
       const runtimeRoot = win32.join(parent, "private runtime");
       await mkdir(runtimeRoot);
@@ -318,6 +320,59 @@ describe.skipIf(process.platform !== "win32")(
       expect(String(launched.error.cause)).toContain(
         "synthetic private-copy failure",
       );
+      expect(javaLaunch).not.toHaveBeenCalled();
+      expect(spawnProcess).not.toHaveBeenCalled();
+    });
+  },
+);
+
+describe.skipIf(process.platform !== "win32")(
+  "Windows existing Ghidra project cancellation",
+  () => {
+    it("preserves cancellation during a private project copy and skips launch", async () => {
+      const parent = await createRoot();
+      const runtimeRoot = win32.join(parent, "private runtime");
+      await mkdir(runtimeRoot);
+      const projectName = "Saved Project_æ—¥æœ¬èªž";
+      const projectPath = await createProject(parent, projectName);
+      const controller = new AbortController();
+      const reason = new Error("cancelled during private project copy");
+      createFakeRuntime(runtimeRoot, undefined, () => controller.abort(reason));
+      const spawnProcess = vi.fn(
+        async (_options: OwnedProviderProcessSpawnOptions) => {
+          throw new Error("spawn must not run after copy cancellation");
+        },
+      );
+      const javaLaunch = vi.fn(async () => {
+        throw new Error(
+          "Java preparation must not run after copy cancellation",
+        );
+      });
+      const launcher = new GhidraHeadlessLauncher({
+        environment: { ComSpec: "C:\\Windows\\System32\\cmd.exe" },
+        analyzeHeadlessPath: "C:\\tools\\ghidra\\support\\analyzeHeadless.bat",
+        configurationDirectoryName: "ghidra_12.1.4_PUBLIC",
+        bridgeScriptPath: "C:\\REA Package\\bridge\\ReaGhidraBridge.java",
+        platform: "win32",
+        existingProject: {
+          projectPath,
+          projectName,
+          programName: "Minecraft.Windows.exe",
+        },
+        javaLaunch,
+        spawnProcess,
+      });
+
+      const launched = await launcher.launch(
+        windowsSession(runtimeRoot, parent),
+        { signal: controller.signal },
+      );
+
+      expect(launched.ok).toBe(false);
+      if (launched.ok) throw new Error("launch unexpectedly succeeded");
+      expect(launched.error).toMatchObject({
+        primaryFailure: { _tag: "AnalysisCancelledError", cause: reason },
+      });
       expect(javaLaunch).not.toHaveBeenCalled();
       expect(spawnProcess).not.toHaveBeenCalled();
     });

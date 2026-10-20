@@ -592,12 +592,14 @@ struct SnapshotWork {
   napi_deferred deferred = nullptr;
   napi_ref rootReference = nullptr;
   Runtime* root;
+  bool immutable;
   std::unique_ptr<File> source;
   Handle destination;
   std::wstring path;
   std::wstring digest;
   std::unique_ptr<Failure> failure;
-  SnapshotWork(napi_env env, Runtime& root) : env(env), root(&root) {}
+  SnapshotWork(napi_env env, Runtime& root, bool immutable)
+      : env(env), root(&root), immutable(immutable) {}
 };
 
 static void copySnapshot(napi_env, void* pointer) {
@@ -656,7 +658,12 @@ static void completeSnapshot(napi_env env, napi_status status, void* pointer) {
     set(env, result, "sha256", string(env, work->digest));
     set(env, result, "source", identity(env, work->source->get(), work->source->requestedPath));
     set(env, result, "snapshot", identity(env, work->destination.get(), work->path));
-    work->root->immutableFiles.push_back(std::move(work->destination));
+    if (work->immutable)
+      work->root->immutableFiles.push_back(std::move(work->destination));
+    else
+      // The private project remains owned by its runtime directory, but the
+      // copy handle must close before Ghidra can update its index/journal files.
+      work->destination.reset();
     check(napi_resolve_deferred(env, work->deferred, result));
   } catch (const Failure& failure) {
     reject(failure);
@@ -668,8 +675,9 @@ static void completeSnapshot(napi_env env, napi_status status, void* pointer) {
 }
 
 static napi_value snapshot(napi_env env, napi_value rootValue, Runtime& root,
-                           const std::wstring& sourcePath, const std::wstring& relative) {
-  auto work = std::make_unique<SnapshotWork>(env, root);
+                           const std::wstring& sourcePath,
+                           const std::wstring& relative, bool immutable) {
+  auto work = std::make_unique<SnapshotWork>(env, root, immutable);
   work->source = openFile(sourcePath);
   work->path = relativePath(root, relative);
   // Retain the write lease with read-only sharing, but omit DELETE authority:
@@ -801,7 +809,12 @@ napi_value filesystemCall(napi_env env, const std::wstring& operation,
     return null(env);
   }
   if (operation == L"runtime_snapshot") {
-    return snapshot(env, args[0], root, wide(env, args[1]), wide(env, args[2]));
+    return snapshot(env, args[0], root, wide(env, args[1]), wide(env, args[2]),
+                    true);
+  }
+  if (operation == L"runtime_copy") {
+    return snapshot(env, args[0], root, wide(env, args[1]), wide(env, args[2]),
+                    false);
   }
   throw Failure("Unknown native filesystem operation", L"", ERROR_INVALID_PARAMETER);
 }

@@ -41,7 +41,7 @@ const snapshotCancellationSchema = z.object({
   win32Code: z.literal(995),
 });
 
-/** A native snapshot acknowledged cancellation, with the caller reason retained. */
+/** A native private file copy acknowledged cancellation, retaining the reason. */
 export class WindowsSnapshotCancelledError extends Error {
   constructor(
     readonly reason: unknown,
@@ -57,7 +57,7 @@ const RUNTIME_CLEANUP_RETRY_DELAY_MS = 100;
 
 /** Retain private DACL and path handles until native recursive cleanup settles. */
 export class WindowsPrivateRuntime {
-  // One native snapshot can own cancellation for this runtime at a time. A
+  // One native file copy can own cancellation for this runtime at a time. A
   // second request throws ERROR_BUSY before #pending or its abort listener is
   // replaced, so aborting a rejected request cannot cancel the accepted copy.
   #pending: Promise<unknown> | undefined;
@@ -108,15 +108,33 @@ export class WindowsPrivateRuntime {
     ]);
   }
 
-  /** Copy admitted source bytes and digest the bytes actually written. */
+  /** Copy and lock admitted source bytes as an immutable runtime snapshot. */
   async snapshot(
+    sourcePath: string,
+    relativePath: string,
+    signal?: AbortSignal,
+  ): Promise<z.infer<typeof snapshotSchema>> {
+    return this.#copy("runtime_snapshot", sourcePath, relativePath, signal);
+  }
+
+  /** Copy source bytes into a private runtime file that may later be changed. */
+  async copyFile(
+    sourcePath: string,
+    relativePath: string,
+    signal?: AbortSignal,
+  ): Promise<z.infer<typeof snapshotSchema>> {
+    return this.#copy("runtime_copy", sourcePath, relativePath, signal);
+  }
+
+  async #copy(
+    operation: "runtime_snapshot" | "runtime_copy",
     sourcePath: string,
     relativePath: string,
     signal?: AbortSignal,
   ): Promise<z.infer<typeof snapshotSchema>> {
     // Admission is synchronous; record ownership only after native acceptance.
     const pending = Promise.resolve(
-      this.authority.call("runtime_snapshot", [
+      this.authority.call(operation, [
         this.observation.handle,
         sourcePath,
         relativePath,

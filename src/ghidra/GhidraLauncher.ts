@@ -23,7 +23,10 @@ import { basename, dirname, join, posix, resolve, win32 } from "node:path";
 
 import writeFileAtomic from "write-file-atomic";
 
-import { windowsPrivateRuntime } from "../windows/WindowsPrivateRuntime.js";
+import {
+  WindowsSnapshotCancelledError,
+  windowsPrivateRuntime,
+} from "../windows/WindowsPrivateRuntime.js";
 import {
   quoteWindowsBatchToken,
   windowsBatchCommand,
@@ -352,16 +355,36 @@ export class GhidraHeadlessLauncher implements GhidraLauncher {
       }
       // Validate the selected project before creating runtime files, then
       // open only its owned copy so Ghidra never touches the original.
-      if (existingProject !== undefined)
-        await copyExistingGhidraProject(
-          existingProject.projectPath,
-          existingProject.projectName,
-          paths.projectRoot,
-          {
-            ...(options.signal === undefined ? {} : { signal: options.signal }),
-            platform,
-          },
-        );
+      if (existingProject !== undefined) {
+        try {
+          await copyExistingGhidraProject(
+            existingProject.projectPath,
+            existingProject.projectName,
+            paths.projectRoot,
+            {
+              ...(options.signal === undefined
+                ? {}
+                : { signal: options.signal }),
+              platform,
+            },
+          );
+        } catch (cause: unknown) {
+          if (
+            platform === "win32" &&
+            cause instanceof WindowsSnapshotCancelledError
+          )
+            throw new AnalysisCancelledError("open_binary", {
+              cause: cause.reason,
+            });
+          if (
+            platform === "win32" &&
+            options.signal?.aborted === true &&
+            cause === options.signal.reason
+          )
+            throw new AnalysisCancelledError("open_binary", { cause });
+          throw cause;
+        }
+      }
       await createGhidraRuntimeDirectories(
         paths,
         platform,
@@ -1315,7 +1338,7 @@ const copyExistingGhidraProjectWindows = async (options: {
                 );
             });
           } else if (metadata.isFile()) {
-            await runtime.snapshot(
+            await runtime.copyFile(
               source,
               destinationRelativePath(destination),
               signal,

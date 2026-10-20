@@ -1,7 +1,9 @@
+import { createHash } from "node:crypto";
 import {
   access,
   chmod,
   mkdir,
+  rename,
   readdir,
   readFile,
   stat,
@@ -18,6 +20,7 @@ import { z } from "zod";
 import { createTestTempDirectory } from "../../../fixtures/temporaryDirectory.js";
 import { createGhidraTestRuntime } from "../../../fixtures/ghidraRuntime.js";
 import type { PrivateRuntimeRoot } from "../../../../src/process/PrivateRuntimeRoot.js";
+import { createGhidraTargetSnapshot } from "../../../../src/ghidra/GhidraTargetSnapshot.js";
 import type {
   OwnedProviderProcessSpawnOptions,
   ProviderProcessHandle,
@@ -707,6 +710,48 @@ describe("Ghidra existing project launcher", () => {
           { encoding: "utf8" },
         ),
       ).toBe("recursive");
+      if (process.platform === "win32") {
+        const privateMarker = join(
+          runtime.path,
+          "project",
+          `${projectName}.rep`,
+          "marker",
+        );
+        const replacement = `${privateMarker}.replacement`;
+        await writeFile(privateMarker, "modified private index");
+        expect(await readFile(privateMarker, "utf8")).toBe(
+          "modified private index",
+        );
+        await writeFile(replacement, "updated private index");
+        await rename(replacement, privateMarker);
+        expect(await readFile(privateMarker, "utf8")).toBe(
+          "updated private index",
+        );
+        expect(await readFile(join(sourceData, "marker"), "utf8")).toBe(
+          "recursive",
+        );
+
+        const targetSource = join(parent, "immutable target.bin");
+        const targetBytes = Buffer.from("immutable target fixture");
+        await writeFile(targetSource, targetBytes);
+        const targetSha256 = createHash("sha256")
+          .update(targetBytes)
+          .digest("hex");
+        const target = await createGhidraTargetSnapshot(
+          targetSource,
+          runtime.path,
+          targetSha256,
+          { platform: "win32" },
+        );
+        const targetReplacement = `${target.path}.replacement`;
+        await writeFile(targetReplacement, "replacement");
+        await expect(writeFile(target.path, "mutation")).rejects.toBeDefined();
+        await expect(
+          rename(targetReplacement, target.path),
+        ).rejects.toBeDefined();
+        expect(await readFile(target.path)).toEqual(targetBytes);
+        expect(await readFile(targetSource)).toEqual(targetBytes);
+      }
       await expect(
         access(join(runtime.path, "project", "Other_Project.gpr")),
       ).rejects.toMatchObject({ code: "ENOENT" });
