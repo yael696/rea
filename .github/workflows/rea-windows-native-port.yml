@@ -1,0 +1,35 @@
+name: REA Windows Native Port Build
+
+on:
+  push:
+    branches:
+      - feat/ghidra-existing-project-windows
+    paths:
+      - .github/workflows/rea-windows-native-port.yml
+
+permissions:
+  contents: read
+
+jobs:
+  build-native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version-file: .nvmrc
+      - name: Install cross compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y g++-mingw-w64-x86-64
+      - name: Build and verify native addon
+        run: |
+          npm run build:windows-native
+          npm run verify:windows-native:artifact
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: rea-windows-native-port
+          path: native/windows/build/
+          if-no-files-found: error
+          retention-days: 7
