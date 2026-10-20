@@ -60,6 +60,48 @@ fixtures have no entry routine or imports and expose two exported functions.
 The same native snapshot, path-admission and cleanup requirements apply to EXEs
 and DLLs.
 
+## Reuse an existing project
+
+Windows can open a saved, expanded Ghidra project from a private copy. Set the
+project path without the `.gpr` or `.rep` suffix and select the exact Ghidra
+program name:
+
+```powershell
+$env:REA_ANALYSIS_PROVIDER = "ghidra"
+$env:REA_GHIDRA_EXISTING_PROJECT_PATH = "C:\analysis\sample-project"
+$env:REA_GHIDRA_EXISTING_PROGRAM_NAME = "sample.exe"
+rea analyze "C:\fixtures\sample.exe" --provider ghidra --json
+```
+
+The source must be a saved `.gpr` marker and sibling `.rep` directory on a fixed
+local NTFS path. REA rejects reparse paths and unsupported filesystems, copies
+the project into its private runtime, then uses `-process`, `-noanalysis`, and
+`-readOnly`. It does not reimport the executable or run global auto-analysis;
+the saved project's analysis completeness remains unknown. The bridge checks
+the selected program and target identity. Changes to the private copy are
+discarded during cleanup; the source project remains unchanged by REA. Close
+any GUI session editing the source project before opening it. See
+[Ghidra provider semantics](ghidra-provider.md#reuse-an-existing-project) for
+the shared CLI/MCP configuration and incompatible options.
+
+### Existing-project verification
+
+Real Windows verification used Ghidra 12.1.4, JDK 21, and a small synthetic
+x86-64 PE. CLI existing-project analysis succeeded and recovered two saved
+functions. MCP `open_binary`, `procedure_pseudo_code`, and `close_binary`
+succeeded; decompilation at `0x140001010` returned `return 0x2a;`. That MCP
+decompilation took about 5.48 seconds in this test only. The analysis profile
+reported `existing-project-private-copy-noanalysis-v1`. Source project hashes
+were unchanged after both CLI analysis and the MCP session.
+
+Native checks allowed writes and index replacement/renaming inside nested
+project directories, rejected modification of an immutable target snapshot,
+and completed runtime cleanup. One diagnostic returned `EBUSY` for a
+root-level file rename; nested index replacement and renaming passed. The cause
+was not established, so this does not establish general root-level rename
+compatibility. Unicode project-name integration and large-project behavior or
+performance, including Minecraft projects, were not validated by these tests.
+
 ## Configuration
 
 ```powershell
