@@ -11,7 +11,7 @@ import { GHIDRA_FUNCTION_OPERATIONS } from "./GhidraFunctionValues.js";
 import { ghidraExtensionResultSchema } from "./extensions/GhidraExtensions.js";
 import { GHIDRA_MIPS_SOFT_FLOAT_STORAGE } from "./GhidraMipsProfile.js";
 
-/** Exact methods proved by the bridge handshake after auto-analysis. */
+/** Exact methods proved by the authenticated Ghidra bridge handshake. */
 export const GHIDRA_SESSION_CAPABILITIES = [
   "ping",
   "shutdown",
@@ -48,6 +48,8 @@ const sessionInfoSchema = z
     read_only: z.boolean(),
     analysis_complete: z.boolean(),
     analysis_timed_out: z.boolean(),
+    /** True when the selected saved project was opened with -noanalysis. */
+    analysis_skipped: z.boolean().default(false),
     /** Program Information attributes; absent load state remains unknown. */
     pdb: z
       .strictObject({
@@ -105,7 +107,7 @@ const sessionInfoSchema = z
   })
   .strict();
 
-/** Authenticated metadata produced after Ghidra finishes auto-analysis. */
+/** Authenticated metadata produced after the selected Program opens. */
 export type GhidraSessionInfo = z.infer<typeof sessionInfoSchema>;
 
 /** Describe missing PDB authority without claiming all names are generated. */
@@ -153,6 +155,8 @@ export const parseGhidraSessionInfo = (
     readonly profileDigest: string;
     readonly targetSha256: string;
     readonly expectedReadOnly?: boolean;
+    readonly expectedProgramName?: string;
+    readonly expectedAnalysisSkipped?: boolean;
     readonly expectedLanguageId?: string;
     readonly expectedCompilerSpecId?: string;
   },
@@ -162,6 +166,11 @@ export const parseGhidraSessionInfo = (
   const expectedCapabilities = GHIDRA_SESSION_CAPABILITIES.filter(
     (capability) => !readOnly || !GHIDRA_MUTATING_OPERATIONS.has(capability),
   );
+  const invalidAnalysisState =
+    parsed.success &&
+    (parsed.data.analysis_skipped
+      ? parsed.data.analysis_complete || parsed.data.analysis_timed_out
+      : parsed.data.analysis_complete === parsed.data.analysis_timed_out);
   if (
     !parsed.success ||
     parsed.data.run_id !== expected.runId ||
@@ -170,6 +179,10 @@ export const parseGhidraSessionInfo = (
     parsed.data.provider.version !== expected.providerVersion ||
     parsed.data.profile_digest !== expected.profileDigest ||
     parsed.data.target.sha256 !== expected.targetSha256 ||
+    (expected.expectedAnalysisSkipped !== undefined &&
+      parsed.data.analysis_skipped !== expected.expectedAnalysisSkipped) ||
+    (expected.expectedProgramName !== undefined &&
+      parsed.data.target.name !== expected.expectedProgramName) ||
     (expected.expectedLanguageId !== undefined &&
       parsed.data.target.language_id !== expected.expectedLanguageId) ||
     (expected.expectedCompilerSpecId !== undefined &&
@@ -179,7 +192,7 @@ export const parseGhidraSessionInfo = (
     expectedCapabilities.some(
       (capability) => !parsed.data.capabilities.includes(capability),
     ) ||
-    parsed.data.analysis_complete === parsed.data.analysis_timed_out
+    invalidAnalysisState
   )
     return err(new Error("Ghidra bridge handshake identity is invalid"));
   return ok(parsed.data);

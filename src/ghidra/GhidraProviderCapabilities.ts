@@ -38,9 +38,9 @@ export const GHIDRA_OPERATIONS = Object.freeze(
 
 /** Health limitations shared by every Ghidra-backed capability. */
 export const healthLimitations = Object.freeze([
-  "The session serves operations only after Ghidra reports default auto-analysis complete; incomplete analysis does not expose partial results.",
-  "The imported Program and temporary project are ephemeral and deleted on close. Annotation operations edit session database metadata; original executable bytes are never written.",
-  "Cancelling an active Ghidra request terminates its ephemeral database and discards session annotations. The selected target remains open; the next provider query imports the original artifact again.",
+  "Fresh imports serve operations after Ghidra reports default auto-analysis complete. Existing-project sessions use -noanalysis and reflect the saved project state, whose analysis completeness remains unknown.",
+  "The active Program and temporary project are ephemeral and deleted on close. Existing-project edits stay in its private copy; original executable bytes and project files are never written.",
+  "Cancelling an active Ghidra request terminates its ephemeral project and discards session annotations. The selected target remains open; the next provider query reopens it through the selected Ghidra workflow.",
 ]);
 
 /** Additional limitations applied to the experimental Windows x64 P0 boundary. */
@@ -108,7 +108,7 @@ export const limitationsFor = (operation: string): readonly string[] => {
     case "list_documents":
       return [
         ...common,
-        "A headless Ghidra session contains exactly one imported Program, unlike Hopper's multi-document GUI session.",
+        "A headless Ghidra session exposes exactly one current Program. Fresh imports select their imported Program; existing-project sessions select the configured -process Program.",
       ];
     case "list_names":
       return [

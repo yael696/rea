@@ -937,6 +937,7 @@ describe("GhidraClient", () => {
         read_only: HOST_TRANSPORT !== "unix-socket",
         analysis_complete: true,
         analysis_timed_out: false,
+        analysis_skipped: false,
         target: {
           image_base: "0x1000",
           default_address_space: "ram",

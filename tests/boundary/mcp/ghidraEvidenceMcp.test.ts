@@ -498,9 +498,9 @@ describe("Ghidra MCP evidence parity", () => {
           ]),
         },
         limitations: expect.arrayContaining([
-          expect.stringContaining("default auto-analysis complete"),
+          expect.stringContaining("Fresh imports serve operations"),
           expect.stringContaining(
-            "original executable bytes are never written",
+            "original executable bytes and project files are never written",
           ),
         ]),
       });

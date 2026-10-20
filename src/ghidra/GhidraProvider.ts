@@ -452,12 +452,31 @@ export class GhidraProvider implements AnalysisProviderCandidate {
       options?.signal,
     );
     if (!seeds.ok) return seeds;
-    if (extensions.value.length === 0 && seeds.value === undefined)
+    const existingProject = this.config.ghidraExistingProject;
+    const profileParameters =
+      existingProject === undefined
+        ? resolved.value.profile.parameters
+        : {
+            ...resolved.value.profile.parameters,
+            import_mode: "existing-project-private-copy-noanalysis-v1",
+            analyzer_preset: "saved-project-state-noanalysis-v1",
+            no_return_repair: "skipped-existing-project-noanalysis-v1",
+            existing_project: {
+              project_path: existingProject.projectPath,
+              project_name: existingProject.projectName,
+              program_name: existingProject.programName,
+            },
+          };
+    if (
+      extensions.value.length === 0 &&
+      seeds.value === undefined &&
+      existingProject === undefined
+    )
       return resolved;
     return ok({
       ...resolved.value,
       profile: createAnalysisProfile(resolved.value.profile.provider, {
-        ...resolved.value.profile.parameters,
+        ...profileParameters,
         ...(extensions.value.length === 0
           ? {}
           : { analysis_extensions: jsonValueSchema.parse(extensions.value) }),

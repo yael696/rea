@@ -43,6 +43,12 @@ export interface GhidraClientOptions {
   readonly profileDigest: string;
   readonly expectedLanguageId?: string;
   readonly expectedCompilerSpecId?: string;
+  /** Program identity selected with -process, when opening a saved project. */
+  readonly expectedProgramName?: string;
+  /** Whether this provider invocation deliberately skipped auto-analysis. */
+  readonly expectedAnalysisSkipped?: boolean;
+  /** Preferred private-runtime parent for same-filesystem project snapshots. */
+  readonly runtimeParent?: string;
   readonly startupTimeoutMs?: number;
   readonly onDiagnostic?: (event: GhidraDiagnostic) => void;
   readonly logger?: Logger;

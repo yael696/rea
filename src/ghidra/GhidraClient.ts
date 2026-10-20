@@ -3,6 +3,8 @@ import {
   type FileSnapshotPartialObservation,
 } from "../domain/fileSnapshotObservation.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { realpath } from "node:fs/promises";
+import { resolve, sep } from "node:path";
 import type { Stats } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import type { Socket } from "node:net";
@@ -106,6 +108,48 @@ import { ghidraSessionRoot } from "./GhidraSessionRoot.js";
 
 const SHUTDOWN_TIMEOUT_MS = 10_000;
 const SESSION_ROOT = ghidraSessionRoot();
+
+const createGhidraRuntimeRoot = async (
+  preferredParent: string | undefined,
+  platform: NodeJS.Platform | undefined,
+): Promise<PrivateRuntimeRoot> => {
+  const createUnder = (parent: string) =>
+    PrivateRuntimeRoot.create({
+      parent,
+      prefix: "rea-ghidra-",
+      ...(platform === undefined ? {} : { platform }),
+    });
+  const isInsideProjectData = (path: string): boolean =>
+    resolve(path)
+      .split(sep)
+      .some((component) => component.endsWith(".rep"));
+  const fallbackParent = isInsideProjectData(SESSION_ROOT)
+    ? "/tmp"
+    : SESSION_ROOT;
+  if (preferredParent === undefined) return createUnder(SESSION_ROOT);
+  const canonicalParent = await realpath(preferredParent).catch(
+    () => undefined,
+  );
+  if (canonicalParent === undefined) return createUnder(fallbackParent);
+  const safeParent = ghidraSessionRoot({
+    base: canonicalParent,
+    ...(platform === undefined ? {} : { platform }),
+  });
+  if (isInsideProjectData(safeParent)) return createUnder(fallbackParent);
+  try {
+    return await createUnder(safeParent);
+  } catch (preferredFailure: unknown) {
+    if (resolve(safeParent) === resolve(fallbackParent)) throw preferredFailure;
+    try {
+      return await createUnder(fallbackParent);
+    } catch (fallbackFailure: unknown) {
+      throw new AggregateError(
+        [preferredFailure, fallbackFailure],
+        "Could not create a private Ghidra runtime beside the selected project or in the session root.",
+      );
+    }
+  }
+};
 
 type GhidraStartupAttempt = SharedStartupAttempt<GhidraStartResult>;
 
@@ -802,11 +846,10 @@ export class GhidraClient {
     deadline: ProviderStartupDeadline,
   ): Promise<GhidraStartResult> {
     try {
-      this.#runtimeRoot = await PrivateRuntimeRoot.create({
-        parent: SESSION_ROOT,
-        prefix: "rea-ghidra-",
-        platform: this.#options.platform,
-      });
+      this.#runtimeRoot = await createGhidraRuntimeRoot(
+        this.#options.runtimeParent,
+        this.#options.platform,
+      );
     } catch (cause: unknown) {
       return err(
         this.#failure("start", "Ghidra runtime root creation failed", cause),
@@ -1009,6 +1052,12 @@ export class GhidraClient {
       providerVersion: this.#options.providerVersion,
       profileDigest: this.#options.profileDigest,
       targetSha256: this.#options.targetSha256,
+      ...(this.#options.expectedProgramName === undefined
+        ? {}
+        : { expectedProgramName: this.#options.expectedProgramName }),
+      ...(this.#options.expectedAnalysisSkipped === undefined
+        ? {}
+        : { expectedAnalysisSkipped: this.#options.expectedAnalysisSkipped }),
       ...(this.#targetAdmission === undefined
         ? {}
         : { targetAdmission: this.#targetAdmission }),

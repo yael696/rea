@@ -505,8 +505,12 @@ public final class ReaGhidraBridge extends HeadlessScript {
         result.add("provider", provider);
         boolean readOnly = !descriptor.transport.equals("unix-socket");
         result.addProperty("read_only", readOnly);
-        result.addProperty("analysis_complete", !timedOut);
+        result.addProperty(
+            "analysis_complete",
+            !timedOut && !descriptor.analysisSkipped
+        );
         result.addProperty("analysis_timed_out", timedOut);
+        result.addProperty("analysis_skipped", descriptor.analysisSkipped);
         result.add("capabilities", GSON.toJsonTree(
             java.util.Arrays.stream(CAPABILITIES)
                 .filter(value -> !readOnly || !(value.equals("annotate_native_function")
@@ -4680,6 +4684,8 @@ public final class ReaGhidraBridge extends HeadlessScript {
         Set<String> keys = new HashSet<>(DESCRIPTOR_KEYS);
         if (parsed.isJsonObject() && parsed.getAsJsonObject().has("analysis_extensions"))
             keys.add("analysis_extensions");
+        if (parsed.isJsonObject() && parsed.getAsJsonObject().has("analysis_skipped"))
+            keys.add("analysis_skipped");
         JsonObject object = requireObject(parsed, keys);
         return new SessionDescriptor(
             requireString(object, "transport"),
@@ -4689,6 +4695,8 @@ public final class ReaGhidraBridge extends HeadlessScript {
             requireSha256(object, "target_sha256"),
             requireString(object, "provider_version"),
             requireString(object, "profile_digest"),
+            object.has("analysis_skipped") &&
+                requireBoolean(object, "analysis_skipped"),
             object.has("analysis_extensions") ? object.getAsJsonArray("analysis_extensions") : new JsonArray()
         );
     }
@@ -4894,6 +4902,7 @@ public final class ReaGhidraBridge extends HeadlessScript {
         String targetSha256,
         String providerVersion,
         String profileDigest,
+        boolean analysisSkipped,
         JsonArray analysisExtensions
     ) {}
     private record Request(int id, String method, JsonObject params) {}

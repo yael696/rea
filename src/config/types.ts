@@ -5,6 +5,13 @@ import type { AnalysisProviderSelector } from "../contracts/providerSelection.js
 import type { GhidraLanguageOverride } from "./ghidraLanguageOverride.js";
 import type { McpInputSchemaProfile } from "./mcpInputSchemaProfile.js";
 
+/** Caller-selected Ghidra project and program opened from a private copy. */
+export interface GhidraExistingProjectConfig {
+  readonly projectPath: string;
+  readonly projectName: string;
+  readonly programName: string;
+}
+
 export interface AppConfig {
   readonly mcpMaxResponseBytes?: number;
   readonly mcpInputSchemaProfile?: McpInputSchemaProfile;
@@ -13,6 +20,7 @@ export interface AppConfig {
   readonly ghidraInstallDir: string | undefined;
   readonly ghidraJavaHome: string | undefined;
   readonly ghidraStartupTimeoutMs: number;
+  readonly ghidraExistingProject?: GhidraExistingProjectConfig;
   readonly ghidraLanguageOverride?: GhidraLanguageOverride;
   readonly ghidraDisabledAnalyzers?: readonly string[];
   readonly ghidraSeedFile?: string;

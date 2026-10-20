@@ -130,6 +130,80 @@ describe("runtime configuration", () => {
       false,
     );
   });
+
+  it("parses an arbitrary existing Ghidra project and selected program", () => {
+    expect(
+      parseConfig({
+        REA_GHIDRA_EXISTING_PROJECT_PATH:
+          "/home/user/ghidra-projects/Minecraft_Import_Only",
+        REA_GHIDRA_EXISTING_PROGRAM_NAME: "Minecraft.Windows.exe",
+      }),
+    ).toMatchObject({
+      ok: true,
+      value: {
+        ghidraExistingProject: {
+          projectPath: "/home/user/ghidra-projects/Minecraft_Import_Only",
+          projectName: "Minecraft_Import_Only",
+          programName: "Minecraft.Windows.exe",
+        },
+      },
+    });
+  });
+
+  it.each([
+    { REA_GHIDRA_EXISTING_PROJECT_PATH: "/projects/game" },
+    { REA_GHIDRA_EXISTING_PROGRAM_NAME: "game.exe" },
+  ])("requires all existing-project identity settings: %o", (values) => {
+    const result = parseConfig(values);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("Expected incomplete project selection");
+    expect(result.error.settings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          setting: expect.stringMatching(/^REA_GHIDRA_EXISTING_/u),
+        }),
+      ]),
+    );
+  });
+
+  it.each([
+    ["relative project path", { REA_GHIDRA_EXISTING_PROJECT_PATH: "game" }],
+    ["program path", { REA_GHIDRA_EXISTING_PROGRAM_NAME: "folder/game.exe" }],
+    ["program wildcard", { REA_GHIDRA_EXISTING_PROGRAM_NAME: "game*.exe" }],
+    [
+      "invalid project basename",
+      { REA_GHIDRA_EXISTING_PROJECT_PATH: "/projects/.hidden" },
+    ],
+    [
+      "oversized project basename",
+      { REA_GHIDRA_EXISTING_PROJECT_PATH: `/projects/${"x".repeat(256)}` },
+    ],
+  ])("rejects unsafe existing-project configuration: %s", (_label, field) => {
+    const result = parseConfig({
+      REA_GHIDRA_EXISTING_PROJECT_PATH: "/projects/game",
+      REA_GHIDRA_EXISTING_PROGRAM_NAME: "game.exe",
+      ...field,
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  it.each([
+    { REA_GHIDRA_LANGUAGE_ID: "x86:LE:32:default" },
+    { REA_GHIDRA_COMPILER_SPEC_ID: "windows" },
+    { REA_GHIDRA_DISABLED_ANALYZERS: "Decompiler Parameter ID" },
+    { REA_GHIDRA_SEED_FILE: "/seeds.tsv" },
+    { REA_GHIDRA_NATIVEAOT_JAR: "/nativeaot.jar" },
+  ])(
+    "rejects import or analysis overrides with an existing project: %o",
+    (extra) => {
+      const result = parseConfig({
+        REA_GHIDRA_EXISTING_PROJECT_PATH: "/projects/game",
+        REA_GHIDRA_EXISTING_PROGRAM_NAME: "game.exe",
+        ...extra,
+      });
+      expect(result.ok).toBe(false);
+    },
+  );
 });
 
 describe("runtime target configuration", () => {

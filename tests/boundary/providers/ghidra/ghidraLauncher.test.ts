@@ -450,31 +450,25 @@ describe("Ghidra existing project", () => {
   it("opens a pre-imported program without importing or deleting the project", () => {
     const arguments_ = ghidraHeadlessArguments({
       ...base,
-      existingProject: { programName: "game.exe" },
+      existingProject: {
+        projectPath: "/tmp/Minecraft_Import_Only",
+        projectName: "Minecraft_Import_Only",
+        programName: "game.exe",
+      },
     });
-    // The project location and name stay explicit; nothing is imported.
-    expect(arguments_.slice(0, 2)).toEqual(["/tmp/project", "rea-project"]);
+    // Preserve the caller's project name; nothing is imported or analyzed.
+    expect(arguments_.slice(0, 2)).toEqual([
+      "/tmp/project",
+      "Minecraft_Import_Only",
+    ]);
     expect(arguments_).not.toContain("-import");
     expect(arguments_).not.toContain("-deleteProject");
-    expect(arguments_).toEqual([
-      "/tmp/project",
-      "rea-project",
-      "-process",
-      "game.exe",
-      "-noanalysis",
-      "-readOnly",
-      "-log",
-      "/tmp/ghidra.log",
-      "-scriptlog",
-      "/tmp/script.log",
-      "-scriptPath",
-      "/package/bridge",
-      "-postScript",
+    expectOptions(arguments_, [["-process", "game.exe"]]);
+    expect(arguments_).toContain("-noanalysis");
+    expect(arguments_).toContain("-readOnly");
+    expect(arguments_).not.toContain(
       "/package/bridge/ReaGhidraNoReturnFix.java",
-      "-postScript",
-      "/package/bridge/ReaGhidraBridge.java",
-      "/tmp/session.json",
-    ]);
+    );
   });
 
   it.each([
@@ -492,13 +486,29 @@ describe("Ghidra existing project", () => {
     { mipsSoftFloat: true as const },
     { seedPath: "/tmp/runtime/seeds/seeds.tsv" },
     { disabledAnalyzers: ["Decompiler Parameter ID"] },
+    {
+      analysisExtensions: [
+        {
+          id: "fixture-extension",
+          path: "/tmp/fixture-extension.jar",
+          configured_path: "/tmp/fixture-extension.jar",
+          sha256: "a".repeat(64),
+          entry_class: "fixture.Extension",
+          integration_api: 1 as const,
+        },
+      ],
+    },
   ])(
     "rejects the import-only option %o with an existing project",
     (conflict) => {
       expect(() =>
         ghidraHeadlessArguments({
           ...base,
-          existingProject: { programName: "game.exe" },
+          existingProject: {
+            projectPath: "/tmp/Minecraft_Import_Only",
+            projectName: "Minecraft_Import_Only",
+            programName: "game.exe",
+          },
           ...conflict,
         }),
       ).toThrow(/existing (Ghidra )?project|fresh import/u);
@@ -515,19 +525,46 @@ describe("Ghidra existing project", () => {
           "bridge",
           "ReaGhidraBridge.java",
         ),
-        existingProject: { programName: "game.exe" },
+        existingProject: {
+          projectPath: "/tmp/Minecraft_Import_Only",
+          projectName: "Minecraft_Import_Only",
+          programName: "game.exe",
+        },
       }),
     ).toThrow(/Windows/u);
   });
 
-  it("requires a program name for -process", () => {
-    expect(() =>
-      ghidraHeadlessArguments({
-        ...base,
-        existingProject: { programName: "   " },
-      }),
-    ).toThrow(/program name/u);
-  });
+  it.each(["   ", "game*.exe", "game?.exe", "folder/game.exe"])(
+    "rejects an invalid program name for -process: %j",
+    (programName) => {
+      expect(() =>
+        ghidraHeadlessArguments({
+          ...base,
+          existingProject: {
+            projectPath: "/tmp/Minecraft_Import_Only",
+            projectName: "Minecraft_Import_Only",
+            programName,
+          },
+        }),
+      ).toThrow(/program name/u);
+    },
+  );
+
+  it.each(["/tmp/.hidden", `/tmp/${"x".repeat(256)}`, "/tmp/bad\n"])(
+    "rejects an unsafe project basename %j",
+    (projectPath) => {
+      expect(() =>
+        ghidraHeadlessArguments({
+          ...base,
+          existingProject: {
+            projectPath,
+            projectName: "Minecraft_Import_Only",
+            programName: "game.exe",
+          },
+        }),
+      ).toThrow(/valid name/u);
+    },
+  );
 });
 
 const fakeSpawnedProcess = (runId: string): SpawnedOwnedProviderProcess => {
@@ -570,7 +607,11 @@ const launchExistingProject = async (
     configurationDirectoryName: "ghidra_12.1.4_PUBLIC",
     javaHome,
     bridgeScriptPath: "/package/bridge/ReaGhidraBridge.java",
-    existingProject: { projectPath, programName: "game.exe" },
+    existingProject: {
+      projectPath,
+      projectName: "Minecraft_Import_Only",
+      programName: "game.exe",
+    },
     spawnProcess: async (options) => {
       spawned.push(options);
       return fakeSpawnedProcess(options.runId);
@@ -596,16 +637,16 @@ describe("Ghidra existing project launcher", () => {
       const parent = await createTestTempDirectory("rea-launcher-test-");
       const runtime = await createGhidraTestRuntime(parent);
       runtimes.push(runtime);
-      const sourceProject = join(parent, "user-project");
-      await mkdir(join(sourceProject, "rea-project.rep"), {
-        recursive: true,
-      });
-      const projectMarker = join(sourceProject, "rea-project.gpr");
+      const sourceLocation = join(parent, "user-project");
+      await mkdir(sourceLocation);
+      const sourceProject = join(sourceLocation, "Minecraft_Import_Only");
+      const sourceData = `${sourceProject}.rep`;
+      await mkdir(sourceData, { recursive: true });
+      const projectMarker = `${sourceProject}.gpr`;
       await writeFile(projectMarker, "pre-imported");
-      await writeFile(
-        join(sourceProject, "rea-project.rep", "marker"),
-        "recursive",
-      );
+      await writeFile(join(sourceData, "marker"), "recursive");
+      await writeFile(join(sourceLocation, "Other_Project.gpr"), "unselected");
+      await mkdir(join(sourceLocation, "Other_Project.rep"));
       const spawned: OwnedProviderProcessSpawnOptions[] = [];
       const launched = await launchExistingProject(
         runtime.path,
@@ -621,18 +662,34 @@ describe("Ghidra existing project launcher", () => {
         expectOptions(spawned[0]?.arguments ?? [], [["-process", "game.exe"]]);
         expect(spawned[0]?.arguments).toContain("-noanalysis");
         expect(spawned[0]?.arguments).toContain("-readOnly");
+        expect(
+          JSON.parse(
+            await readFile(join(runtime.path, "session.json"), "utf8"),
+          ),
+        ).toMatchObject({ analysis_skipped: true });
         // Copy-first: the owned runtime holds the copy before Ghidra starts.
         expect(
-          await readFile(join(runtime.path, "project", "rea-project.gpr"), {
-            encoding: "utf8",
-          }),
+          await readFile(
+            join(runtime.path, "project", "Minecraft_Import_Only.gpr"),
+            {
+              encoding: "utf8",
+            },
+          ),
         ).toBe("pre-imported");
         expect(
           await readFile(
-            join(runtime.path, "project", "rea-project.rep", "marker"),
+            join(
+              runtime.path,
+              "project",
+              "Minecraft_Import_Only.rep",
+              "marker",
+            ),
             { encoding: "utf8" },
           ),
         ).toBe("recursive");
+        await expect(
+          access(join(runtime.path, "project", "Other_Project.gpr")),
+        ).rejects.toMatchObject({ code: "ENOENT" });
         // The caller's original project files stay untouched.
         expect(await readFile(projectMarker, { encoding: "utf8" })).toBe(
           "pre-imported",
@@ -641,11 +698,23 @@ describe("Ghidra existing project launcher", () => {
       } finally {
         await launched.value.cleanup?.();
       }
+      await runtime.close();
+      await expect(access(runtime.path)).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      expect(await readFile(projectMarker, { encoding: "utf8" })).toBe(
+        "pre-imported",
+      );
+      expect(
+        await readFile(join(sourceData, "marker"), { encoding: "utf8" }),
+      ).toBe("recursive");
     },
   );
+});
 
+describe("Ghidra existing project validation", () => {
   it.skipIf(process.platform === "win32")(
-    "rejects a missing project directory before starting Ghidra",
+    "rejects a missing project pair before starting Ghidra",
     async () => {
       const parent = await createTestTempDirectory("rea-launcher-test-");
       const runtime = await createGhidraTestRuntime(parent);
@@ -654,29 +723,30 @@ describe("Ghidra existing project launcher", () => {
       const launched = await launchExistingProject(
         runtime.path,
         parent,
-        join(parent, "absent-project"),
+        join(parent, "absent-project", "Minecraft_Import_Only"),
         spawned,
       );
       expect(launched.ok).toBe(false);
       if (launched.ok) throw new Error("launch unexpectedly succeeded");
       // The launcher wraps the copy failure; the reason stays on the cause.
-      expect(String(launched.error.cause)).toMatch(/does not exist/u);
+      expect(String(launched.error.cause)).toMatch(
+        /Minecraft_Import_Only\.gpr/u,
+      );
       expect(spawned).toHaveLength(0);
     },
   );
 
   it.skipIf(process.platform === "win32")(
-    "rejects a project without the fixed rea-project name before copying",
+    "rejects a project that does not contain the selected project name before copying",
     async () => {
       const parent = await createTestTempDirectory("rea-launcher-test-");
       const runtime = await createGhidraTestRuntime(parent);
       runtimes.push(runtime);
-      // The headless open selects the project by the fixed name; a caller
-      // directory holding any other project file must fail with its reason
-      // instead of spawning into an opaque Ghidra error.
-      const sourceProject = join(parent, "user-project");
-      await mkdir(sourceProject, { recursive: true });
-      await writeFile(join(sourceProject, "other-project.grez"), "mislabeled");
+      // The base path basename must agree with the selected project identity.
+      const sourceLocation = join(parent, "user-project");
+      await mkdir(sourceLocation, { recursive: true });
+      const sourceProject = join(sourceLocation, "other-project");
+      await writeFile(`${sourceProject}.grez`, "mislabeled");
       const spawned: OwnedProviderProcessSpawnOptions[] = [];
       const launched = await launchExistingProject(
         runtime.path,
@@ -686,38 +756,43 @@ describe("Ghidra existing project launcher", () => {
       );
       expect(launched.ok).toBe(false);
       if (launched.ok) throw new Error("launch unexpectedly succeeded");
-      expect(String(launched.error.cause)).toMatch(/rea-project\.gpr/u);
+      expect(String(launched.error.cause)).toMatch(
+        /matching its path basename/u,
+      );
       expect(spawned).toHaveLength(0);
       // Nothing from the rejected project was copied into the owned runtime.
-      await expect(
-        access(join(runtime.path, "project")),
-      ).resolves.toBeUndefined();
-      expect(await readdir(join(runtime.path, "project"))).toEqual([]);
+      await expect(access(join(runtime.path, "project"))).rejects.toMatchObject(
+        { code: "ENOENT" },
+      );
     },
   );
+});
 
+describe("Ghidra existing project runtime overlap", () => {
   it.skipIf(process.platform === "win32")(
     "rejects a project path that overlaps the runtime before copying",
     async () => {
       const parent = await createTestTempDirectory("rea-launcher-test-");
       const runtime = await createGhidraTestRuntime(parent);
       runtimes.push(runtime);
-      // Copying the runtime into itself would recurse without bound, so the
-      // launcher must refuse the overlap before touching the file system.
+      // A selected data directory inside the owned runtime must be refused
+      // before creating the private project copy.
       const spawned: OwnedProviderProcessSpawnOptions[] = [];
       const launched = await launchExistingProject(
         runtime.path,
         parent,
-        runtime.path,
+        join(runtime.path, "Minecraft_Import_Only"),
         spawned,
       );
       expect(launched.ok).toBe(false);
       if (launched.ok) throw new Error("launch unexpectedly succeeded");
       expect(String(launched.error.cause)).toMatch(
-        /overlaps the REA runtime directory/u,
+        /overlap the REA runtime directory/u,
       );
       expect(spawned).toHaveLength(0);
-      expect(await readdir(join(runtime.path, "project"))).toEqual([]);
+      await expect(access(join(runtime.path, "project"))).rejects.toMatchObject(
+        { code: "ENOENT" },
+      );
     },
   );
 
@@ -733,16 +808,18 @@ describe("Ghidra existing project launcher", () => {
       const launched = await launchExistingProject(
         runtime.path,
         parent,
-        join(runtime.path, "project"),
+        join(runtime.path, "project", "Minecraft_Import_Only"),
         spawned,
       );
       expect(launched.ok).toBe(false);
       if (launched.ok) throw new Error("launch unexpectedly succeeded");
       expect(String(launched.error.cause)).toMatch(
-        /overlaps the REA runtime directory/u,
+        /overlap the REA runtime directory/u,
       );
       expect(spawned).toHaveLength(0);
-      expect(await readdir(join(runtime.path, "project"))).toEqual([]);
+      await expect(access(join(runtime.path, "project"))).rejects.toMatchObject(
+        { code: "ENOENT" },
+      );
     },
   );
 });
@@ -754,31 +831,35 @@ describe("Ghidra existing project symlink overlap", () => {
       const parent = await createTestTempDirectory("rea-launcher-test-");
       const runtime = await createGhidraTestRuntime(parent);
       runtimes.push(runtime);
-      // A valid project directory inside the owned runtime, reached only
+      // A valid project pair inside the owned runtime, reached only
       // through a symbolic link outside it: the lexical path never overlaps
       // the runtime, so only a realpath-based comparison can refuse the copy.
       const hidden = join(runtime.path, "link-target");
       await mkdir(hidden, { recursive: true });
-      await writeFile(join(hidden, "rea-project.gpr"), "", {
+      await writeFile(join(hidden, "Minecraft_Import_Only.gpr"), "", {
         encoding: "utf8",
       });
-      await mkdir(join(hidden, "rea-project.rep"), { recursive: true });
+      await mkdir(join(hidden, "Minecraft_Import_Only.rep"), {
+        recursive: true,
+      });
       const alias = join(parent, "alias");
       await symlink(hidden, alias);
       const spawned: OwnedProviderProcessSpawnOptions[] = [];
       const launched = await launchExistingProject(
         runtime.path,
         parent,
-        alias,
+        join(alias, "Minecraft_Import_Only"),
         spawned,
       );
       expect(launched.ok).toBe(false);
       if (launched.ok) throw new Error("launch unexpectedly succeeded");
       expect(String(launched.error.cause)).toMatch(
-        /overlaps the REA runtime directory/u,
+        /overlap the REA runtime directory/u,
       );
       expect(spawned).toHaveLength(0);
-      expect(await readdir(join(runtime.path, "project"))).toEqual([]);
+      await expect(access(join(runtime.path, "project"))).rejects.toMatchObject(
+        { code: "ENOENT" },
+      );
     },
   );
 });
@@ -792,12 +873,12 @@ describe("Ghidra expanded project admission", () => {
     const parent = await createTestTempDirectory("rea-launcher-test-");
     const runtime = await createGhidraTestRuntime(parent);
     runtimes.push(runtime);
-    const sourceProject = join(parent, "user-project");
-    await mkdir(sourceProject);
-    await writeFile(join(sourceProject, "rea-project.grez"), "saved archive");
-    if (marker)
-      await writeFile(join(sourceProject, "rea-project.gpr"), "marker");
-    if (data) await mkdir(join(sourceProject, "rea-project.rep"));
+    const sourceLocation = join(parent, "user-project");
+    await mkdir(sourceLocation);
+    const sourceProject = join(sourceLocation, "Minecraft_Import_Only");
+    await writeFile(`${sourceProject}.grez`, "saved archive");
+    if (marker) await writeFile(`${sourceProject}.gpr`, "marker");
+    if (data) await mkdir(`${sourceProject}.rep`);
     const spawned: OwnedProviderProcessSpawnOptions[] = [];
     const launched = await launchExistingProject(
       runtime.path,
@@ -811,7 +892,9 @@ describe("Ghidra expanded project admission", () => {
       /restore saved \.grez archives/u,
     );
     expect(spawned).toHaveLength(0);
-    expect(await readdir(join(runtime.path, "project"))).toEqual([]);
+    await expect(access(join(runtime.path, "project"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
   });
 });
 

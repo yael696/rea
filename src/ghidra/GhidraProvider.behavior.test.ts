@@ -2528,6 +2528,7 @@ const sessionInfo = () => ({
   read_only: false as const,
   analysis_complete: true,
   analysis_timed_out: false,
+  analysis_skipped: false,
   capabilities: [...GHIDRA_SESSION_CAPABILITIES],
   target: {
     name: "fixture",

@@ -25,6 +25,7 @@ const session = (
   read_only: false,
   analysis_complete: true,
   analysis_timed_out: false,
+  analysis_skipped: false,
   capabilities: [...GHIDRA_SESSION_CAPABILITIES],
   target: {
     name: "legacy.exe",
@@ -48,6 +49,44 @@ describe("Ghidra DOS import commitment", () => {
   it("rejects compiler drift independently of the language", () => {
     expect(
       parseGhidraSessionInfo(session(undefined, "windows"), expected).ok,
+    ).toBe(false);
+  });
+});
+
+describe("Ghidra existing-project identity", () => {
+  it("requires the selected -process program name from the authenticated handshake", () => {
+    const selected = { ...expected, expectedProgramName: "legacy.exe" };
+    expect(parseGhidraSessionInfo(session(), selected).ok).toBe(true);
+    expect(
+      parseGhidraSessionInfo(
+        { ...session(), target: { ...session().target, name: "other.exe" } },
+        selected,
+      ).ok,
+    ).toBe(false);
+  });
+
+  it("preserves skipped auto-analysis as distinct from completion and timeout", () => {
+    const skipped = {
+      ...session(),
+      analysis_complete: false,
+      analysis_timed_out: false,
+      analysis_skipped: true,
+    };
+    expect(
+      parseGhidraSessionInfo(skipped, {
+        ...expected,
+        expectedAnalysisSkipped: true,
+      }).ok,
+    ).toBe(true);
+    expect(
+      parseGhidraSessionInfo(session(), {
+        ...expected,
+        expectedAnalysisSkipped: true,
+      }).ok,
+    ).toBe(false);
+    expect(
+      parseGhidraSessionInfo({ ...skipped, analysis_complete: true }, expected)
+        .ok,
     ).toBe(false);
   });
 });

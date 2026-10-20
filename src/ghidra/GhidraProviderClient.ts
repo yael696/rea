@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { analysisErrorWithCleanupFailure } from "../domain/analysisErrorCleanup.js";
 import { artifactFilePrimaryFailure } from "../artifacts/ArtifactFileOperation.js";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { GHIDRA_BRIDGE_SOURCES } from "./GhidraBridgeSources.js";
 
@@ -11,6 +12,10 @@ import {
   type AnalysisOperation,
 } from "../application/AnalysisProvider.js";
 import type { AppConfig } from "../config/types.js";
+import {
+  ghidraExistingProgramNameSchema,
+  ghidraExistingProjectNameSchema,
+} from "../config/ghidraExistingProject.js";
 import {
   ghidraSeedCommitmentSchema,
   ghidraSeedFailure,
@@ -133,9 +138,54 @@ export const createGhidraProviderClient = (input: {
 }): Result<AnalysisClient, AnalysisError> => {
   const { config, logger, clientFactory, context, installation } = input;
   const { target, profile } = input.admission;
+  const existingProject = config.ghidraExistingProject;
+  const existingProjectName =
+    existingProject === undefined ? undefined : existingProject.projectName;
   const prerequisites = ghidraClientPrerequisites(profile, installation);
   if (!prerequisites.ok) return err(prerequisites.error);
   const committedProfile = prerequisites.value.profile;
+  const existingProjectProfileSchema = z.strictObject({
+    project_path: z.string().min(1),
+    project_name: ghidraExistingProjectNameSchema,
+    program_name: ghidraExistingProgramNameSchema,
+  });
+  const profileExistingProject = existingProjectProfileSchema.safeParse(
+    committedProfile.parameters.existing_project,
+  );
+  if (
+    (existingProject === undefined &&
+      committedProfile.parameters.existing_project !== undefined) ||
+    (existingProject !== undefined &&
+      (!profileExistingProject.success ||
+        profileExistingProject.data.project_path !==
+          existingProject.projectPath ||
+        profileExistingProject.data.project_name !== existingProjectName ||
+        profileExistingProject.data.program_name !==
+          existingProject.programName ||
+        committedProfile.parameters.import_mode !==
+          "existing-project-private-copy-noanalysis-v1" ||
+        committedProfile.parameters.analyzer_preset !==
+          "saved-project-state-noanalysis-v1" ||
+        committedProfile.parameters.no_return_repair !==
+          "skipped-existing-project-noanalysis-v1"))
+  )
+    return err(
+      new ProviderAdapterError("ghidra", "open_binary", {
+        diagnostics: {
+          reason:
+            "The committed analysis profile does not match the selected existing Ghidra project; resolve the project profile again.",
+        },
+      }),
+    );
+  if (existingProject !== undefined && installation.platform === "win32")
+    return err(
+      new ProviderAdapterError("ghidra", "open_binary", {
+        diagnostics: {
+          reason:
+            "Existing Ghidra project copies are not supported by the Windows P0 launch path.",
+        },
+      }),
+    );
   const psp = isGhidraPspTarget(target);
   const pspExtension = psp
     ? ghidraPspExtensionSchema.safeParse(
@@ -156,11 +206,13 @@ export const createGhidraProviderClient = (input: {
         },
       }),
     );
-  const softFloat = isGhidraMipsSoftFloatTarget(target);
+  const softFloat =
+    existingProject === undefined && isGhidraMipsSoftFloatTarget(target);
   if (
+    existingProject === undefined &&
     softFloat !==
-    (committedProfile.parameters.mips_soft_float_storage ===
-      GHIDRA_MIPS_SOFT_FLOAT_STORAGE)
+      (committedProfile.parameters.mips_soft_float_storage ===
+        GHIDRA_MIPS_SOFT_FLOAT_STORAGE)
   )
     return err(
       new ProviderAdapterError("ghidra", "open_binary", {
@@ -203,6 +255,18 @@ export const createGhidraProviderClient = (input: {
       }),
     );
   const seeds = seedProfile.data;
+  if (
+    existingProject !== undefined &&
+    (extensions.length > 0 || seeds !== undefined)
+  )
+    return err(
+      new ProviderAdapterError("ghidra", "open_binary", {
+        diagnostics: {
+          reason:
+            "Existing Ghidra project mode does not apply analysis extensions or seeds; resolve a compatible project profile.",
+        },
+      }),
+    );
   const parameterLanguage = ghidraProfileLanguageOverride(
     committedProfile.parameters,
   );
@@ -284,9 +348,10 @@ export const createGhidraProviderClient = (input: {
   const seedLimitations: string[] = [...ghidraSeedLimitations(seeds)];
   const pdbLimitations: string[] = [];
   // Replaced by the reported storage outcome once the handshake is checked.
-  const softFloatLimitations: string[] = [
-    ...ghidraMipsSoftFloatLimitations(softFloat),
-  ];
+  const softFloatLimitations: string[] =
+    existingProject === undefined
+      ? [...ghidraMipsSoftFloatLimitations(softFloat)]
+      : [];
   const rawLanguage =
     target.format === "raw-binary"
       ? ghidraRawBinaryLanguage(target.architecture)
@@ -325,6 +390,12 @@ export const createGhidraProviderClient = (input: {
             "macOS sessions require a matching executable Ghidra native decompiler; REA checks for it but does not build native components or change Gatekeeper quarantine state.",
           ]
         : [];
+  const existingProjectLimitations =
+    existingProject === undefined
+      ? []
+      : [
+          `REA opened Ghidra project ${existingProjectName} from a private copy with -process and -noanalysis. The saved project's analysis completeness is unknown; REA did not run global auto-analysis.`,
+        ];
   if (input.signal.aborted)
     return err(
       new AnalysisCancelledError("create_analysis_client", {
@@ -350,13 +421,21 @@ export const createGhidraProviderClient = (input: {
           import.meta.url,
         ),
       ),
-      ...(pspExtension?.success === true
+      ...(existingProject === undefined && pspExtension?.success === true
         ? { pspExtension: pspExtension.data }
         : {}),
-      ...(softFloat ? { mipsSoftFloat: true as const } : {}),
-      ...(target.format === "dos-mz" ? { dosMz: true } : {}),
-      ...(target.format === "dos-com" ? { dosCom: true } : {}),
-      ...(rawLanguage === undefined || target.format !== "raw-binary"
+      ...(existingProject === undefined && softFloat
+        ? { mipsSoftFloat: true as const }
+        : {}),
+      ...(existingProject === undefined && target.format === "dos-mz"
+        ? { dosMz: true }
+        : {}),
+      ...(existingProject === undefined && target.format === "dos-com"
+        ? { dosCom: true }
+        : {}),
+      ...(existingProject !== undefined ||
+      rawLanguage === undefined ||
+      target.format !== "raw-binary"
         ? {}
         : {
             rawBinary: {
@@ -365,15 +444,21 @@ export const createGhidraProviderClient = (input: {
               baseAddr: target.entryPoint,
             },
           }),
-      ...(importLanguage === undefined
+      ...(existingProject !== undefined || importLanguage === undefined
         ? {}
         : { languageOverride: importLanguage }),
-      ...(config.ghidraDisabledAnalyzers === undefined
+      ...(existingProject !== undefined ||
+      config.ghidraDisabledAnalyzers === undefined
         ? {}
         : { disabledAnalyzers: config.ghidraDisabledAnalyzers }),
-      ...(seeds === undefined ? {} : { analysisSeeds: seeds }),
+      ...(existingProject !== undefined || seeds === undefined
+        ? {}
+        : { analysisSeeds: seeds }),
       platform: installation.platform,
-      ...(extensions.length === 0 ? {} : { analysisExtensions: extensions }),
+      ...(existingProject !== undefined || extensions.length === 0
+        ? {}
+        : { analysisExtensions: extensions }),
+      ...(existingProject === undefined ? {} : { existingProject }),
     }),
     targetPath:
       installation.platform === "win32"
@@ -386,25 +471,34 @@ export const createGhidraProviderClient = (input: {
         : "unix-socket",
     providerVersion: prerequisites.value.providerVersion,
     profileDigest: committedProfile.digest,
-    ...(["dos-mz", "dos-com"].includes(target.format)
+    expectedAnalysisSkipped: existingProject !== undefined,
+    ...(existingProject !== undefined
       ? {
-          expectedLanguageId: "x86:LE:16:Real Mode",
-          expectedCompilerSpecId: "default",
+          expectedProgramName: existingProject.programName,
+          ...(dirname(resolve(existingProject.projectPath)) ===
+          resolve(existingProject.projectPath)
+            ? {}
+            : { runtimeParent: dirname(existingProject.projectPath) }),
         }
-      : rawLanguage === undefined
-        ? importLanguage === undefined
-          ? {}
+      : ["dos-mz", "dos-com"].includes(target.format)
+        ? {
+            expectedLanguageId: "x86:LE:16:Real Mode",
+            expectedCompilerSpecId: "default",
+          }
+        : rawLanguage === undefined
+          ? importLanguage === undefined
+            ? {}
+            : {
+                expectedLanguageId: importLanguage.languageId,
+                ...(importLanguage.compilerSpecId === undefined
+                  ? {}
+                  : { expectedCompilerSpecId: importLanguage.compilerSpecId }),
+              }
           : {
-              expectedLanguageId: importLanguage.languageId,
-              ...(importLanguage.compilerSpecId === undefined
-                ? {}
-                : { expectedCompilerSpecId: importLanguage.compilerSpecId }),
-            }
-        : {
-            expectedLanguageId: rawLanguage.languageId,
-            expectedCompilerSpecId: rawLanguage.compilerSpecId,
-          }),
-    ...(psp
+              expectedLanguageId: rawLanguage.languageId,
+              expectedCompilerSpecId: rawLanguage.compilerSpecId,
+            }),
+    ...(existingProject === undefined && psp
       ? {
           expectedLanguageId: "Allegrex:LE:32:default",
           expectedCompilerSpecId: "default",
@@ -429,29 +523,35 @@ export const createGhidraProviderClient = (input: {
         ...ghidraPePdbLimitations(target, info.pdb),
       );
     }
-    const softFloatReason = ghidraMipsSoftFloatFailure(
-      softFloat,
-      info.mips_soft_float_storage,
-    );
+    const softFloatReason =
+      existingProject === undefined
+        ? ghidraMipsSoftFloatFailure(softFloat, info.mips_soft_float_storage)
+        : undefined;
     extensionFailure =
-      ghidraExtensionFailure(
-        extensions,
-        info.analysis_extensions ?? [],
-        operation,
-      ) ??
-      ghidraSeedFailure(seeds, info.analysis_seeds, operation) ??
-      (softFloatReason === undefined
+      existingProject !== undefined
         ? undefined
-        : new ProviderAdapterError("ghidra", operation, {
-            diagnostics: { reason: softFloatReason },
-          }));
-    if (extensionFailure === undefined && info.analysis_seeds !== undefined)
+        : (ghidraExtensionFailure(
+            extensions,
+            info.analysis_extensions ?? [],
+            operation,
+          ) ??
+          ghidraSeedFailure(seeds, info.analysis_seeds, operation) ??
+          (softFloatReason === undefined
+            ? undefined
+            : new ProviderAdapterError("ghidra", operation, {
+                diagnostics: { reason: softFloatReason },
+              })));
+    if (
+      existingProject === undefined &&
+      extensionFailure === undefined &&
+      info.analysis_seeds !== undefined
+    )
       seedLimitations.splice(
         0,
         seedLimitations.length,
         ...ghidraSeedLimitations(seeds, info.analysis_seeds),
       );
-    if (extensionFailure === undefined)
+    if (existingProject === undefined && extensionFailure === undefined)
       softFloatLimitations.splice(
         0,
         softFloatLimitations.length,
@@ -475,6 +575,7 @@ export const createGhidraProviderClient = (input: {
   );
   const sessionLimitations = (): readonly string[] => [
     ...providerLimitations,
+    ...existingProjectLimitations,
     ...targetLimitations,
     ...(psp ? GHIDRA_PSP_LIMITATIONS : []),
     ...softFloatLimitations,

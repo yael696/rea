@@ -66,6 +66,7 @@ const fixture = (version = "12.1.4", coverage?: RelationshipCoverage) => {
           read_only: false,
           analysis_complete: true,
           analysis_timed_out: false,
+          analysis_skipped: false,
           capabilities: [...GHIDRA_SESSION_CAPABILITIES],
           target: {
             name: "fixture",

@@ -5,7 +5,12 @@ import {
   type GhidraSeedCommitment,
 } from "./GhidraAnalysisSeeds.js";
 import type { GhidraLanguageOverride } from "../config/ghidraLanguageOverride.js";
+import {
+  ghidraExistingProgramNameSchema,
+  ghidraExistingProjectNameSchema,
+} from "../config/ghidraExistingProject.js";
 import { snapshotEnvironment } from "../process/snapshotEnvironment.js";
+import { constants as fsConstants } from "node:fs";
 import {
   cp,
   lstat,
@@ -231,19 +236,19 @@ const ghidraLaunchCommandOutput = (
 /**
  * A pre-imported Ghidra project opened with -process so import and
  * auto-analysis costs paid outside this session are reused. The headless
- * open selects the fixed project name `rea-project`, so `projectPath` must
- * hold both the regular `rea-project.gpr` marker and `rea-project.rep`
- * directory of an expanded project; the owned copy keeps that name.
- * Archives and incomplete layouts are rejected with their reason before
- * Ghidra starts.
+ * open preserves `projectName`, so `projectPath` names the project basename
+ * without a suffix; its sibling `<projectName>.gpr` marker and
+ * `<projectName>.rep` directory are copied into the private project location.
+ * Missing or malformed pairs are rejected before Ghidra starts.
  */
 export interface GhidraExistingProject {
   /**
-   * Directory holding the expanded pre-imported project's `rea-project.gpr`
-   * marker and `rea-project.rep` data directory. Saved `.grez` archives must
-   * be restored outside REA before selecting this read-only workflow.
+   * Absolute project basename without `.gpr` or `.rep`, such as
+   * `/projects/Minecraft_Import_Only`. Its basename selects the Ghidra project
+   * name, and the pair is read from sibling paths.
    */
   readonly projectPath: string;
+  readonly projectName: string;
   /** Imported program name selected with -process. */
   readonly programName: string;
 }
@@ -354,19 +359,20 @@ export class GhidraHeadlessLauncher implements GhidraLauncher {
             "Installed Allegrex content changed since profile resolution; reopen the target to resolve a fresh profile.",
           );
       }
+      // Validate the selected project before creating runtime files, then
+      // open only its owned copy so Ghidra never touches the original.
+      if (existingProject !== undefined)
+        await copyExistingGhidraProject(
+          existingProject.projectPath,
+          existingProject.projectName,
+          paths.projectRoot,
+          options.signal,
+        );
       await createGhidraRuntimeDirectories(
         paths,
         platform,
         this.options.configurationDirectoryName,
       );
-      // Copy-first: open the caller's project only through the owned copy so
-      // Ghidra never touches the original project files.
-      if (existingProject !== undefined)
-        await copyExistingGhidraProject(
-          existingProject.projectPath,
-          paths.projectRoot,
-          options.signal,
-        );
       let seedPath: string | undefined;
       let extensions: readonly GhidraExtension[] = [];
       if (
@@ -401,6 +407,7 @@ export class GhidraHeadlessLauncher implements GhidraLauncher {
           target_sha256: session.targetSha256,
           provider_version: session.providerVersion,
           profile_digest: session.profileDigest,
+          analysis_skipped: existingProject !== undefined,
           ...(extensions.length === 0
             ? {}
             : { analysis_extensions: extensions }),
@@ -421,9 +428,7 @@ export class GhidraHeadlessLauncher implements GhidraLauncher {
           : { mipsSoftFloat: this.options.mipsSoftFloat }),
         projectRoot: paths.projectRoot,
         targetPath: session.targetPath,
-        ...(existingProject === undefined
-          ? {}
-          : { existingProject: { programName: existingProject.programName } }),
+        ...(existingProject === undefined ? {} : { existingProject }),
         bridgeScriptPath: this.options.bridgeScriptPath,
         descriptorPath: paths.descriptorPath,
         ghidraLogPath: paths.ghidraLogPath,
@@ -732,6 +737,8 @@ export interface GhidraHeadlessArgumentOptions {
   readonly targetPath: string;
   /** Open this pre-imported program with -process instead of importing. */
   readonly existingProject?: {
+    readonly projectPath: string;
+    readonly projectName: string;
     readonly programName: string;
   };
   readonly bridgeScriptPath: string;
@@ -752,6 +759,7 @@ export interface GhidraHeadlessArgumentOptions {
   readonly disabledAnalyzers?: readonly string[];
   /** Canonical seed snapshot passed to the pre-analysis seed script. */
   readonly seedPath?: string;
+  readonly analysisExtensions?: readonly GhidraExtension[];
 }
 
 type ExistingProjectOptions = Pick<
@@ -766,7 +774,10 @@ type ExistingProjectOptions = Pick<
   | "mipsSoftFloat"
   | "seedPath"
   | "disabledAnalyzers"
-> & { readonly analysisSeeds?: GhidraSeedCommitment };
+  | "analysisExtensions"
+> & {
+  readonly analysisSeeds?: GhidraSeedCommitment;
+};
 
 /** Admit existing-project compatibility before any runtime writes. */
 const validateExistingProjectOptions = (
@@ -782,9 +793,21 @@ const validateExistingProjectOptions = (
       throw new Error(
         "An existing Ghidra project cannot be opened on the Windows launch path.",
       );
-    if (existing.programName.trim() === "")
+    if (!isAbsolute(existing.projectPath))
+      throw new Error("An existing Ghidra project path must be absolute.");
+    if (
+      !ghidraExistingProjectNameSchema.safeParse(existing.projectName)
+        .success ||
+      basename(resolve(existing.projectPath)) !== existing.projectName
+    )
       throw new Error(
-        "An existing Ghidra project requires a program name for -process.",
+        "An existing Ghidra project requires a valid name matching its path basename.",
+      );
+    if (
+      !ghidraExistingProgramNameSchema.safeParse(existing.programName).success
+    )
+      throw new Error(
+        "An existing Ghidra project requires a valid program name for -process.",
       );
     if (options.psp === true)
       throw new Error(
@@ -809,10 +832,11 @@ const validateExistingProjectOptions = (
     if (
       options.seedPath !== undefined ||
       options.analysisSeeds !== undefined ||
+      (options.analysisExtensions?.length ?? 0) > 0 ||
       (options.disabledAnalyzers?.length ?? 0) > 0
     )
       throw new Error(
-        "An existing project opens without analysis; analysis seeds and analyzer overrides do not apply.",
+        "An existing project opens without analysis; analysis seeds, extensions, and analyzer overrides do not apply.",
       );
   }
 };
@@ -829,6 +853,7 @@ export const ghidraHeadlessArguments = (
   const override = options.languageOverride;
   const rawBinary = options.rawBinary;
   const existing = options.existingProject;
+  const existingProjectName = existing?.projectName;
   validateExistingProjectOptions(options);
   if (
     options.psp === true &&
@@ -873,7 +898,7 @@ export const ghidraHeadlessArguments = (
     );
   return [
     options.projectRoot,
-    "rea-project",
+    existingProjectName ?? "rea-project",
     ...(existing === undefined
       ? ["-import", options.targetPath]
       : ["-process", existing.programName]),
@@ -974,7 +999,8 @@ export const ghidraHeadlessArguments = (
           ),
           options.disabledAnalyzers.join(","),
         ]),
-    ...((options.platform ?? process.platform) === "win32"
+    ...(existing !== undefined ||
+    (options.platform ?? process.platform) === "win32"
       ? []
       : [
           "-postScript",
@@ -1055,12 +1081,11 @@ const createGhidraRuntimeDirectories = async (
 /**
  * Copy a caller-owned pre-imported project into the owned runtime's project
  * root so the headless open reads the copy and never mutates the original.
- * The invocation selects the fixed project name `rea-project`, so a caller
- * directory without the expanded `rea-project.gpr` / `rea-project.rep` pair
- * is rejected here with its reason instead of an opaque Ghidra failure.
- * A project path that overlaps the runtime (the runtime root itself, a
- * directory inside it, or an ancestor of it) is rejected before any copy so
- * the recursive copy can never descend into its own destination.
+ * The invocation preserves the selected project name, so only its `.gpr`
+ * marker and `.rep` directory are copied; other projects in the same location
+ * stay out of the runtime.
+ * A selected marker or data directory that overlaps the runtime is rejected
+ * before any copy so the recursive copy can never descend into its destination.
  */
 const pathsOverlap = (first: string, second: string): boolean => {
   const contains = (ancestor: string, descendant: string): boolean => {
@@ -1072,10 +1097,25 @@ const pathsOverlap = (first: string, second: string): boolean => {
 
 export const copyExistingGhidraProject = async (
   sourcePath: string,
+  projectName: string,
   destinationRoot: string,
   signal?: AbortSignal,
 ): Promise<void> => {
   signal?.throwIfAborted();
+  if (!isAbsolute(sourcePath))
+    throw new GhidraLaunchError(
+      "Existing Ghidra project path must be absolute.",
+    );
+  const projectBase = resolve(sourcePath);
+  if (
+    !ghidraExistingProjectNameSchema.safeParse(projectName).success ||
+    basename(projectBase) !== projectName
+  )
+    throw new GhidraLaunchError(
+      "Existing Ghidra project name must be valid and match the path basename.",
+    );
+  const markerPath = `${projectBase}.gpr`;
+  const dataPath = `${projectBase}.rep`;
   // Resolve both sides through realpath before comparing: resolve() does not
   // follow symbolic links, so a symlinked path component could otherwise hide
   // an overlap with the runtime from the purely lexical check below. The
@@ -1085,31 +1125,26 @@ export const copyExistingGhidraProject = async (
   const realRuntime = await realpath(dirname(destinationRoot)).catch(() =>
     resolve(dirname(destinationRoot)),
   );
-  const realSource = await realpath(sourcePath).catch(() => undefined);
-  if (realSource !== undefined && pathsOverlap(realSource, realRuntime))
+  const [realMarker, realData] = await Promise.all([
+    realpath(markerPath).catch(() => resolve(markerPath)),
+    realpath(dataPath).catch(() => resolve(dataPath)),
+  ]);
+  if (
+    pathsOverlap(realMarker, realRuntime) ||
+    pathsOverlap(realData, realRuntime)
+  )
     throw new Error(
-      `Existing Ghidra project directory overlaps the REA runtime directory; select a project outside the runtime: ${sourcePath}`,
+      `Existing Ghidra project files overlap the REA runtime directory; select a project outside the runtime: ${sourcePath}`,
     );
-  const source = await lstat(sourcePath).catch(() => undefined);
+  const marker = await lstat(markerPath).catch(() => undefined);
   signal?.throwIfAborted();
-  if (source === undefined || !source.isDirectory())
-    throw new Error(
-      `Existing Ghidra project directory does not exist: ${sourcePath}`,
-    );
-  const marker = await lstat(join(sourcePath, "rea-project.gpr")).catch(
-    () => undefined,
-  );
-  signal?.throwIfAborted();
-  const data = await lstat(join(sourcePath, "rea-project.rep")).catch(
-    () => undefined,
-  );
+  const data = await lstat(dataPath).catch(() => undefined);
   signal?.throwIfAborted();
   if (!marker?.isFile() || !data?.isDirectory())
     throw new Error(
-      `Existing Ghidra project requires a regular rea-project.gpr marker and rea-project.rep directory; restore saved .grez archives before selecting the project: ${sourcePath}`,
+      `Existing Ghidra project requires a regular ${markerPath} marker and ${dataPath} directory; restore saved .grez archives before selecting the project: ${sourcePath}`,
     );
-  const entries = await readdir(sourcePath);
-  signal?.throwIfAborted();
+  await mkdir(destinationRoot, { mode: 0o700 });
   const copyEntry = async (
     source: string,
     destination: string,
@@ -1136,6 +1171,9 @@ export const copyExistingGhidraProject = async (
         dereference: true,
         errorOnExist: true,
         force: false,
+        // Prefer copy-on-write when the source and private runtime share a
+        // filesystem; Node falls back to ordinary copying when unsupported.
+        mode: fsConstants.COPYFILE_FICLONE,
       });
     } else {
       throw new GhidraLaunchError(
@@ -1144,8 +1182,8 @@ export const copyExistingGhidraProject = async (
     }
     signal?.throwIfAborted();
   };
-  for (const entry of entries)
-    await copyEntry(join(sourcePath, entry), join(destinationRoot, entry));
+  await copyEntry(markerPath, join(destinationRoot, `${projectName}.gpr`));
+  await copyEntry(dataPath, join(destinationRoot, `${projectName}.rep`));
 };
 
 const writeGhidraRuntimeFile = async (

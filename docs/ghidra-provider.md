@@ -1,9 +1,9 @@
 # Ghidra provider semantics
 
-REA imports one target into an ephemeral Ghidra database. Linux/macOS support
-read-only analysis and atomic function-name/entry-comment edits; Windows P0 is
-read-only. GUI controls and persistent database mutation are unavailable.
-Executable bytes remain unchanged.
+By default, REA imports one target into an ephemeral Ghidra database.
+Linux/macOS support read-only analysis and atomic function-name/entry-comment
+edits; Windows P0 is read-only. GUI controls and persistent database mutation
+are unavailable. Executable bytes remain unchanged.
 
 Use [installation](installation.md#ghidra) for supported hosts, prerequisites,
 configuration, startup deadlines, resource controls, and cleanup recovery.
@@ -23,11 +23,67 @@ provider stays bound to the target; runtime failure never selects another
 provider automatically. The contracts below describe Ghidra observations,
 not equivalence with another engine's pseudocode or analysis database.
 
+## Reuse an existing project
+
+On Linux and macOS, select a saved expanded Ghidra project with these settings:
+
+```bash
+export REA_ANALYSIS_PROVIDER=ghidra
+export REA_GHIDRA_EXISTING_PROJECT_PATH=/home/user/ghidra-projects/Minecraft_Import_Only
+export REA_GHIDRA_EXISTING_PROGRAM_NAME=Minecraft.Windows.exe
+```
+
+`REA_GHIDRA_EXISTING_PROJECT_PATH` names the project basename without an
+extension. For example, that path resolves to the sibling
+`Minecraft_Import_Only.gpr` file and `Minecraft_Import_Only.rep` directory.
+Its basename is the Ghidra project name. The project and program names are
+passed to Ghidra exactly; spaces and Unicode are preserved. Program names must
+be exact and cannot contain `*` or `?`, which Ghidra's `-process` option treats
+as wildcards. Both settings are required together. A language override,
+analyzer override, analysis seed file, or NativeAOT annotation extension cannot
+be combined with this mode. Windows Ghidra P0 does not support it.
+
+The CLI and MCP server read the same environment configuration. Select Ghidra
+for each CLI investigation with `--provider ghidra`; use
+`provider_id: "ghidra"` on MCP `open_binary`. For example:
+
+```bash
+rea analyze /home/user/binaries/Minecraft.Windows.exe --provider ghidra --json
+rea decompile /home/user/binaries/Minecraft.Windows.exe \
+  --provider ghidra --procedure 0x140001000 --json
+```
+
+For MCP, open that executable with `provider_id: "ghidra"`, then call
+`list_documents` and a function operation such as `procedure_pseudo_code`.
+Set these variables in the MCP server's environment; `rea setup` can preserve
+them in an agent registration after showing its planned changes and receiving
+the operator's approval.
+
+REA copies the selected project into an owner-only private runtime before
+Ghidra starts. It preserves the project's name, invokes `-process
+<program-name> -noanalysis -readOnly`, and does not import the executable,
+delete the project, or run the global auto-analysis or no-return repair pass.
+The bridge handshake must report both the selected program name and the
+executable SHA-256 admitted by `open_binary`, and must attest that auto-analysis
+was skipped; a mismatch fails startup. The session reports skipped analysis
+separately from completion and timeout. REA prefers a temporary runtime beside
+the selected project to allow filesystem
+copy-on-write where supported, and falls back to the normal session temp root
+when that location cannot be created. The source project is only read. Close
+any GUI session that is editing it before starting REA so the copied project
+has a stable source state.
+
+Project completeness remains unknown. Results reflect the saved Ghidra state,
+including any partial analysis already present; REA does not claim that all
+functions, references, or data were previously analyzed. Changes made during a
+REA session are confined to its private copy and are discarded when the owned
+runtime is removed.
+
 ## Admitted inventory semantics
 
 | Concern          | Ghidra contract                                                                                                                                                                                                                                                                                 |
 | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Program identity | One `analyzeHeadless` import produces exactly one Program; `list_documents` therefore returns exactly one name.                                                                                                                                                                                 |
+| Program identity | `list_documents` returns the selected current Program. A fresh import selects its imported Program; existing-project mode selects the exact configured `-process` name and checks it again in the bridge handshake.                                                                             |
 | Addresses        | Default memory uses lowercase `0x` hexadecimal. Non-default and external spaces use `<percent-encoded-space>:0x<hex>` and remain round-trippable. The handshake commits image base and default address-space name.                                                                              |
 | Symbols          | `list_names` includes address-bearing memory and external symbols, including dynamic symbols, while excluding variable and no-address namespace records. Each item reports primary, dynamic, external, symbol type, and source facts.                                                           |
 | Procedures       | Both non-external and external functions are listed. A local thunk remains distinct from its resolved target; exact and qualified name lookup fails on ambiguity rather than guessing.                                                                                                          |
@@ -35,7 +91,7 @@ not equivalence with another engine's pseudocode or analysis database.
 | Memory           | Memory-block end addresses are exclusive. Read/write/execute, initialization, overlay, address space, and image base are direct Ghidra observations.                                                                                                                                            |
 | Inventory        | Procedure, symbol, and string listings plus searches return the complete matching collection in one response; callers do not provide offsets or result-count limits.                                                                                                                            |
 | Search           | Literal and Java-regex searches return every match in the immutable provider-defined inventory; string search does not cover every text sequence in artifact bytes. Search waits for a reply or caller cancellation; there are no caller-supplied offsets or result-count limits.               |
-| Analysis state   | The socket is exposed only after default auto-analysis completes. Established operations wait for their reply or caller cancellation; there is no fixed response-size ceiling.                                                                                                                  |
+| Analysis state   | Fresh imports expose the socket after default auto-analysis completes. Existing-project mode uses `-noanalysis`; saved project completeness stays unknown. Established operations wait for their reply or caller cancellation; there is no fixed response-size ceiling.                         |
 
 String-search completeness applies only to Ghidra-defined string `Data`. Packed
 or undefined literals, including Rust strings, may be absent; an empty result

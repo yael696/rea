@@ -8,6 +8,10 @@ import {
   ghidraCompilerSpecIdSchema,
   ghidraLanguageIdSchema,
 } from "./ghidraLanguageOverride.js";
+import {
+  ghidraExistingProgramNameSchema,
+  ghidraExistingProjectPathSchema,
+} from "./ghidraExistingProject.js";
 import { ghidraDisabledAnalyzersSchema } from "./ghidraDisabledAnalyzers.js";
 import {
   DEFAULT_GHIDRA_STARTUP_TIMEOUT_MS,
@@ -57,6 +61,8 @@ const environmentSchema = z.object({
   ),
   REA_GHIDRA_LANGUAGE_ID: ghidraLanguageIdSchema.optional(),
   REA_GHIDRA_COMPILER_SPEC_ID: ghidraCompilerSpecIdSchema.optional(),
+  REA_GHIDRA_EXISTING_PROJECT_PATH: ghidraExistingProjectPathSchema.optional(),
+  REA_GHIDRA_EXISTING_PROGRAM_NAME: ghidraExistingProgramNameSchema.optional(),
   REA_GHIDRA_DISABLED_ANALYZERS: ghidraDisabledAnalyzersSchema.optional(),
   REA_GHIDRA_SEED_FILE: z
     .string()
@@ -176,6 +182,51 @@ export const parseEnvironment = (
   const parsed = parseEnvironmentValues(environment, unresolvedSettings);
   if (!parsed.ok) return parsed;
   const env = parsed.value;
+  const existingProjectSettings = [
+    "REA_GHIDRA_EXISTING_PROJECT_PATH",
+    "REA_GHIDRA_EXISTING_PROGRAM_NAME",
+  ] as const;
+  const hasExistingProjectSetting = existingProjectSettings.some(
+    (setting) => env[setting] !== undefined,
+  );
+  if (hasExistingProjectSetting) {
+    const missing = existingProjectSettings
+      .filter(
+        (setting) =>
+          env[setting] === undefined && !unresolvedSettings.has(setting),
+      )
+      .map((setting) => ({
+        setting,
+        constraint:
+          "must be set with REA_GHIDRA_EXISTING_PROJECT_PATH and REA_GHIDRA_EXISTING_PROGRAM_NAME",
+      }));
+    if (missing.length > 0)
+      return err(
+        new ConfigurationError("Invalid REA environment configuration", {
+          settings: missing,
+        }),
+      );
+    const incompatibleSettings = [
+      ["REA_GHIDRA_LANGUAGE_ID", env.REA_GHIDRA_LANGUAGE_ID],
+      ["REA_GHIDRA_COMPILER_SPEC_ID", env.REA_GHIDRA_COMPILER_SPEC_ID],
+      ["REA_GHIDRA_DISABLED_ANALYZERS", env.REA_GHIDRA_DISABLED_ANALYZERS],
+      ["REA_GHIDRA_SEED_FILE", env.REA_GHIDRA_SEED_FILE],
+      ["REA_GHIDRA_NATIVEAOT_JAR", env.REA_GHIDRA_NATIVEAOT_JAR],
+    ] as const;
+    const incompatible = incompatibleSettings
+      .filter(([, value]) => value !== undefined)
+      .map(([setting]) => ({
+        setting,
+        constraint:
+          "cannot be combined with an existing Ghidra project because it changes import or analysis behavior",
+      }));
+    if (incompatible.length > 0)
+      return err(
+        new ConfigurationError("Invalid REA environment configuration", {
+          settings: incompatible,
+        }),
+      );
+  }
   // Ghidra's analyzeHeadless accepts -cspec only together with -processor.
   if (
     env.REA_GHIDRA_COMPILER_SPEC_ID !== undefined &&

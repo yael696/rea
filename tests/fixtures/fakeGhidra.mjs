@@ -311,6 +311,7 @@ const sessionInfo = ({
   read_only: transport !== "unix-socket",
   analysis_complete: !timedOut,
   analysis_timed_out: timedOut,
+  analysis_skipped: false,
   capabilities: [
     "read_binary_inventory_summary",
     "ping",

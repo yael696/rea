@@ -3,6 +3,7 @@ import { accessSync, constants, statSync } from "node:fs";
 import type { ConfigurationError } from "../domain/configurationErrors.js";
 import { ok, type Result } from "../domain/result.js";
 import { parseEnvironment } from "./environment.js";
+import { ghidraExistingProjectNameFromPath } from "./ghidraExistingProject.js";
 import { homeDirectoryFromEnvironment } from "./homeDirectory.js";
 import type { AppConfig } from "./types.js";
 import {
@@ -51,6 +52,17 @@ export const parseConfig = (
   const parsed = parseEnvironment(appEnvironment);
   if (!parsed.ok) return parsed;
   const env = parsed.value;
+  const existingProject =
+    env.REA_GHIDRA_EXISTING_PROJECT_PATH === undefined ||
+    env.REA_GHIDRA_EXISTING_PROGRAM_NAME === undefined
+      ? undefined
+      : {
+          projectPath: env.REA_GHIDRA_EXISTING_PROJECT_PATH,
+          projectName: ghidraExistingProjectNameFromPath(
+            env.REA_GHIDRA_EXISTING_PROJECT_PATH,
+          ),
+          programName: env.REA_GHIDRA_EXISTING_PROGRAM_NAME,
+        };
   return ok({
     ...(env.REA_MCP_MAX_RESPONSE_BYTES === undefined
       ? {}
@@ -65,6 +77,9 @@ export const parseConfig = (
     ghidraInstallDir: env.GHIDRA_INSTALL_DIR,
     ghidraJavaHome: env.JAVA_HOME,
     ghidraStartupTimeoutMs: env.REA_GHIDRA_STARTUP_TIMEOUT_MS,
+    ...(existingProject === undefined
+      ? {}
+      : { ghidraExistingProject: existingProject }),
     ...(env.REA_GHIDRA_LANGUAGE_ID === undefined
       ? {}
       : {
